@@ -72,21 +72,21 @@ https://github.com/Southern-Company-HA/southern-company-hacs
 Using your HA configuration directory (folder) as a starting point you should now also have this:
 
 ```text
-custom_components/southern_company_hacs/translations/en.json
-custom_components/southern_company_hacs/translations/fr.json
-custom_components/southern_company_hacs/translations/nb.json
-custom_components/southern_company_hacs/translations/sensor.en.json
-custom_components/southern_company_hacs/translations/sensor.fr.json
-custom_components/southern_company_hacs/translations/sensor.nb.json
-custom_components/southern_company_hacs/translations/sensor.nb.json
-custom_components/southern_company_hacs/__init__.py
-custom_components/southern_company_hacs/api.py
-custom_components/southern_company_hacs/binary_sensor.py
-custom_components/southern_company_hacs/config_flow.py
-custom_components/southern_company_hacs/const.py
-custom_components/southern_company_hacs/manifest.json
-custom_components/southern_company_hacs/sensor.py
-custom_components/southern_company_hacs/switch.py
+custom_components/southern_company/translations/en.json
+custom_components/southern_company/translations/fr.json
+custom_components/southern_company/translations/nb.json
+custom_components/southern_company/translations/sensor.en.json
+custom_components/southern_company/translations/sensor.fr.json
+custom_components/southern_company/translations/sensor.nb.json
+custom_components/southern_company/translations/sensor.nb.json
+custom_components/southern_company/__init__.py
+custom_components/southern_company/api.py
+custom_components/southern_company/binary_sensor.py
+custom_components/southern_company/config_flow.py
+custom_components/southern_company/const.py
+custom_components/southern_company/manifest.json
+custom_components/southern_company/sensor.py
+custom_components/southern_company/switch.py
 ```
 
 ## Configuration
