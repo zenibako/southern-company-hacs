@@ -23,13 +23,27 @@
 
 ## Installation
 
+### HACS
+
+You can add this repository to HACS if you have it installed:
+
+1. Navigate to HACS. Click the 3 dots at the top right, then select "Custom Repositories".
+2. Enter the URL below for Repository:
+```txt
+https://github.com/Southern-Company-HA/southern-company-hacs
+```
+3. Select the Type "Integration".
+4. Click the "Add" button.
+5. Search for "Southern Company" in HACS, then download and install. You may need to restart HA.
+
+### Manual
+
 1. Using the tool of choice open the directory (folder) for your HA configuration (where you find `configuration.yaml`).
 2. If you do not have a `custom_components` directory (folder) there, you need to create it.
 3. In the `custom_components` directory (folder) create a new folder called `southern_company_hacs`.
 4. Download _all_ the files from the `custom_components/southern_company_hacs/` directory (folder) in this repository.
 5. Place the files you downloaded in the new directory (folder) you created.
-6. Restart Home Assistant
-7. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Southern Company HACS"
+6. Restart Home Assistant.
 
 Using your HA configuration directory (folder) as a starting point you should now also have this:
 
@@ -51,7 +65,11 @@ custom_components/southern_company_hacs/sensor.py
 custom_components/southern_company_hacs/switch.py
 ```
 
-## Configuration is done in the UI
+## Configuration
+
+In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Southern Company HACS"
+
+Configuration is done in the UI.
 
 <!---->
 
