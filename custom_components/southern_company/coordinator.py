@@ -141,7 +141,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     last_stats_time = None
                 else:
                     _cost_sum = cost_stat[cost_statistic_id][0]["sum"] or 0.0
-                    last_stats_time = cost_stat[cost_statistic_id][0]["start"]
+                    _raw_start = cost_stat[cost_statistic_id][0]["start"]
+                    last_stats_time = (
+                        _raw_start.timestamp()
+                        if isinstance(_raw_start, datetime.datetime)
+                        else float(_raw_start)
+                    )
                     usage_stat = await get_instance(self.hass).async_add_executor_job(
                         statistics_during_period,
                         self.hass,
@@ -158,7 +163,9 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             usage_statistics = []
 
             for data in hourly_data:
-                if data.cost is None or data.usage is None:
+                if not isinstance(data.cost, (int, float)) or not isinstance(
+                    data.usage, (int, float)
+                ):
                     continue
                 from_time = data.time
                 if from_time is None or (
