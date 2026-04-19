@@ -73,6 +73,34 @@ Configuration is done in the UI.
 
 <!---->
 
+## Utility Meter and per-rate usage
+
+Each account exposes a `Total consumption` sensor (`sensor.*_total_consumption`, `state_class: total_increasing`, unit `kWh`) that accumulates indefinitely across billing cycles. It is intended as a source for the built-in Utility Meter helper.
+
+**Caveat — time-of-use attribution.** Southern Company's hourly readings lag about 48 hours, and the Utility Meter helper attributes deltas to whichever tariff is *active when Home Assistant sees the delta*, not the hour the energy was actually consumed. That makes a naive Utility Meter + tariff-automation setup inaccurate for TOU billing.
+
+For accurate per-rate breakdown, configure tariff windows in the integration's Options. The coordinator then partitions the hourly readings at ingest time using the actual consumption timestamps and emits separate statistics per tariff:
+
+- `southern_company:energy_usage_<tariff>_<account>`
+- `southern_company:energy_cost_<tariff>_<account>`
+
+These appear in the Energy dashboard as independent sources. The legacy `southern_company:energy_usage_<account>` / `..._cost_<account>` statistics continue to be written for backward compatibility.
+
+Example tariff schedule (YAML in the Options dialog):
+
+```yaml
+- name: peak
+  days: [0, 1, 2, 3, 4]
+  start_hour: 14
+  end_hour: 19
+- name: off_peak
+  days: [0, 1, 2, 3, 4, 5, 6]
+  start_hour: 0
+  end_hour: 24
+```
+
+Semantics: `days` uses `0=Mon..6=Sun`; hours are half-open `[start, end)`; the first matching entry wins; any hour not matched falls into the `default` tariff.
+
 ## Contributions are welcome!
 
 If you want to contribute to this please read the [Contribution guidelines](CONTRIBUTING.md)
