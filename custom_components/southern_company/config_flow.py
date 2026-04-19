@@ -69,8 +69,6 @@ def _validate_tariffs(raw: str) -> tuple[list[dict] | None, str | None]:
             return None, "invalid_schema"
         if not (0 <= start_hour < end_hour <= 24):
             return None, "bad_hours"
-        if name in seen_names:
-            return None, "duplicate_name"
         seen_names.add(name)
     return parsed, None
 
