@@ -109,7 +109,7 @@ SENSORS: tuple[SouthernCompanyEntityDescription, ...] = (
         key="cumulative_cost",
         name="Total cost",
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=2,
         value_fn=lambda data: data.cumulative_cost,
     ),
