@@ -32,7 +32,6 @@
     "error": {
       "invalid_yaml": "Could not parse YAML",
       "invalid_schema": "Schema is invalid \u2014 each entry needs a name, days (0-6), start_hour, end_hour",
-      "duplicate_name": "Tariff names must be unique",
       "bad_hours": "start_hour must be less than end_hour, both within 0-24"
     }
   }
