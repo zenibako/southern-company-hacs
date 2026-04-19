@@ -18,8 +18,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import aiohttp_client
 
+from . import parser_patch
 from .const import DOMAIN
 from .coordinator import SouthernCompanyCoordinator
+
+parser_patch.apply()
 
 PLATFORMS = [Platform.SENSOR]
 failures: dict[str, float] = {}
