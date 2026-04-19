@@ -57,6 +57,7 @@ def _validate_tariffs(raw: str) -> tuple[list[dict] | None, str | None]:
         days = entry.get("days")
         start_hour = entry.get("start_hour")
         end_hour = entry.get("end_hour")
+        months = entry.get("months")
         if (
             not isinstance(name, str)
             or not name
@@ -69,6 +70,11 @@ def _validate_tariffs(raw: str) -> tuple[list[dict] | None, str | None]:
             return None, "invalid_schema"
         if not (0 <= start_hour < end_hour <= 24):
             return None, "bad_hours"
+        if months is not None:
+            if not isinstance(months, list) or not all(
+                isinstance(m, int) and 1 <= m <= 12 for m in months
+            ):
+                return None, "bad_months"
         seen_names.add(name)
     return parsed, None
 
@@ -155,14 +161,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_PASSWORD): str,
             }
         )
-        return self.async_show_form(
-            step_id="reauth_confirm", data_schema=data_schema, errors=errors
-        )
-            auth = await self.async_authenticate(user_input, errors)
-            if auth is not None:
-                return auth
-        else:
-            data_schema = STEP_USER_DATA_SCHEMA
         return self.async_show_form(
             step_id="reauth_confirm", data_schema=data_schema, errors=errors
         )

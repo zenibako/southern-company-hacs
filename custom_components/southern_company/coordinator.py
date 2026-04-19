@@ -11,6 +11,7 @@ from southern_company_api.exceptions import SouthernCompanyException
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.statistics import (
+    StatisticMeanType,
     async_add_external_statistics,
     get_last_statistics,
     statistics_during_period,
@@ -42,13 +43,16 @@ def match_tariff(tariffs: list[dict], when: datetime.datetime) -> str:
         return DEFAULT_TARIFF_NAME
     weekday = when.weekday()
     hour = when.hour
+    month = when.month  # 1-12
     for tariff in tariffs:
         days = tariff.get("days", [])
         start_hour = tariff.get("start_hour", 0)
         end_hour = tariff.get("end_hour", 24)
+        months = tariff.get("months")
         name = tariff.get("name")
         if name and weekday in days and start_hour <= hour < end_hour:
-            return name
+            if months is None or month in months:
+                return name
     return DEFAULT_TARIFF_NAME
 
 
@@ -261,6 +265,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             cost_metadata = StatisticMetaData(
                 has_mean=False,
                 has_sum=True,
+                mean_type=StatisticMeanType.NONE,
                 name=f"Southern Company {account.name} cost",
                 source=DOMAIN,
                 statistic_id=cost_statistic_id,
@@ -269,6 +274,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             usage_metadata = StatisticMetaData(
                 has_mean=False,
                 has_sum=True,
+                mean_type=StatisticMeanType.NONE,
                 name=f"Southern Company {account.name} usage",
                 source=DOMAIN,
                 statistic_id=usage_statistic_id,
@@ -284,6 +290,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     StatisticMetaData(
                         has_mean=False,
                         has_sum=True,
+                        mean_type=StatisticMeanType.NONE,
                         name=f"Southern Company {account.name} cost ({tariff_name})",
                         source=DOMAIN,
                         statistic_id=f"{DOMAIN}:energy_cost_{tariff_name}_{account.number}",
@@ -297,6 +304,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     StatisticMetaData(
                         has_mean=False,
                         has_sum=True,
+                        mean_type=StatisticMeanType.NONE,
                         name=f"Southern Company {account.name} usage ({tariff_name})",
                         source=DOMAIN,
                         statistic_id=f"{DOMAIN}:energy_usage_{tariff_name}_{account.number}",
