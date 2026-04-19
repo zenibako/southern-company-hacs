@@ -93,8 +93,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_authenticate(
         self, user_input: Mapping[str, Any], errors: dict[str, str]
-    ) -> ConfigFlowResult:
-        """Handle authentication for all flows to reduce repetition of code."""
+    ) -> ConfigFlowResult | None:
+        """Handle authentication for all flows. Returns entry on success, None on failure."""
         sca = SouthernCompanyAPI(
             user_input["username"],
             user_input["password"],
@@ -110,6 +110,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected exception")
             errors["base"] = "unknown"
 
+        if errors:
+            return None
         return self.async_create_entry(title="Southern Company Hacs", data=user_input)
 
     async def async_step_user(
@@ -136,17 +138,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_reauth_confirm(entry_data)
 
     async def async_step_reauth_confirm(
-        self, user_input: Mapping[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle a flow initiated by reauthentication."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            data_schema = vol.Schema(
-                {
-                    vol.Required(CONF_USERNAME, default=user_input[CONF_USERNAME]): str,
-                    vol.Required(CONF_PASSWORD): str,
-                }
-            )
+            auth = await self.async_authenticate(user_input, errors)
+            if auth is not None:
+                return auth
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_USERNAME,
+                    default=(user_input or {}).get(CONF_USERNAME, ""),
+                ): str,
+                vol.Required(CONF_PASSWORD): str,
+            }
+        )
+        return self.async_show_form(
+            step_id="reauth_confirm", data_schema=data_schema, errors=errors
+        )
             auth = await self.async_authenticate(user_input, errors)
             if auth is not None:
                 return auth
