@@ -25,7 +25,7 @@
                     "tariffs": "Tariff schedule (JSON)"
                 },
                 "data_description": {
-                    "tariffs": "JSON list of objects with: name (string), days (0=Mon\u20136=Sun), start_hour, end_hour (0\u201324). Optional: months (1\u201312). Hours not matching any window fall into 'default'. Example: [{\"name\":\"on-peak\",\"days\":[0,1,2,3,4],\"months\":[6,7,8,9],\"start_hour\":14,\"end_hour\":19},{\"name\":\"off-peak\",\"days\":[0,1,2,3,4,5,6],\"start_hour\":0,\"end_hour\":14}]"
+                    "tariffs": "JSON list of objects with: name (string), days (0=Mon,1=Tue,2=Wed,3=Thu,4=Fri,5=Sat,6=Sun), start_hour, end_hour (0\u201324). Optional: months (1=Jan\u202612=Dec). Hours not matching any window fall into 'default'. Example: [{\"name\":\"on-peak\",\"days\":[0,1,2,3,4],\"months\":[6,7,8,9],\"start_hour\":14,\"end_hour\":19},{\"name\":\"off-peak\",\"days\":[0,1,2,3,4,5,6],\"start_hour\":0,\"end_hour\":14}]"
                 }
             }
         },
