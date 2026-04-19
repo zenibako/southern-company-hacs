@@ -125,13 +125,19 @@ async def _patched_get_service_point_number(self: Account, jwt_token: str) -> st
             if points:
                 self.service_point_number = points[0]["servicePointNumber"]
             else:
+                # Log a snippet of the actual response so the upstream change
+                # is debuggable. Avoid spamming the entire payload.
+                preview = json.dumps(service_info)[:500]
                 _LOGGER.warning(
                     "meterAndServicePoints empty for account %s (company %s); "
-                    "hourly stats may be unavailable",
+                    "monthly/hourly stats unavailable. Response preview: %s",
                     self.number,
                     company_code,
+                    preview,
                 )
-                self.service_point_number = None
+                # yarl 1.x rejects None query params, so use empty string. The
+                # coordinator skips accounts with a falsy service_point_number.
+                self.service_point_number = ""
     except aiohttp.ClientConnectorError as err:
         raise CantReachSouthernCompany("Failed to connect to api") from err
     return self.service_point_number or ""
