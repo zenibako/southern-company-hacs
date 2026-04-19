@@ -21,6 +21,7 @@ import re
 
 import jwt
 from aiohttp import ContentTypeError
+from southern_company_api.account import Account
 from southern_company_api.exceptions import (
     CantReachSouthernCompany,
     InvalidLogin,
@@ -93,10 +94,54 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
     return self._sc
 
 
+async def _patched_get_service_point_number(self: Account, jwt_token: str) -> str:
+    """Patched get_service_point_number: uses account's own company code and
+    handles an empty meterAndServicePoints list gracefully."""
+    import aiohttp
+
+    headers = {
+        "Authorization": f"bearer {jwt_token}",
+        "content-type": "application/json, text/plain, */*",
+    }
+    company_code = self.company.name  # e.g. "GPC", "APC", "MPC"
+    try:
+        async with self.session.get(
+            f"https://customerservice2api.southerncompany.com/api/MyPowerUsage/"
+            f"getMPUBasicAccountInformation/{self.number}/{company_code}",
+            headers=headers,
+        ) as resp:
+            try:
+                service_info = await resp.json()
+            except (ContentTypeError, json.JSONDecodeError) as err:
+                try:
+                    error_text = await resp.text()
+                except aiohttp.ClientError:
+                    error_text = str(err)
+                raise CantReachSouthernCompany(
+                    f"Incorrect mimetype while trying to get service point number. "
+                    f"error:{error_text} Response headers:{resp.headers}"
+                ) from err
+            points = (service_info.get("Data") or {}).get("meterAndServicePoints") or []
+            if points:
+                self.service_point_number = points[0]["servicePointNumber"]
+            else:
+                _LOGGER.warning(
+                    "meterAndServicePoints empty for account %s (company %s); "
+                    "hourly stats may be unavailable",
+                    self.number,
+                    company_code,
+                )
+                self.service_point_number = None
+    except aiohttp.ClientConnectorError as err:
+        raise CantReachSouthernCompany("Failed to connect to api") from err
+    return self.service_point_number or ""
+
+
 def apply() -> None:
     """Install the patch. Safe to call multiple times."""
     if getattr(SouthernCompanyAPI._get_sc_web_token, "_hacs_patched", False):
         return
     _patched_get_sc_web_token._hacs_patched = True  # type: ignore[attr-defined]
     SouthernCompanyAPI._get_sc_web_token = _patched_get_sc_web_token  # type: ignore[assignment]
-    _LOGGER.debug("Applied ScWebToken parser patch")
+    Account.get_service_point_number = _patched_get_service_point_number  # type: ignore[assignment]
+    _LOGGER.debug("Applied ScWebToken parser patch and service point patch")
