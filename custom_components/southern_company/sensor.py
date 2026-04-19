@@ -22,6 +22,7 @@ from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .coordinator import AccountData
 from .coordinator import SouthernCompanyCoordinator
 
 
@@ -29,7 +30,7 @@ from .coordinator import SouthernCompanyCoordinator
 class SouthernCompanyEntityDescriptionMixin:
     """Mixin for required keys."""
 
-    value_fn: Callable[[southern_company_api.account.MonthlyUsage], str | float]
+    value_fn: Callable[[AccountData], str | float]
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ SENSORS: tuple[SouthernCompanyEntityDescription, ...] = (
         name="Monthly cost",
         device_class=SensorDeviceClass.MONETARY,
         suggested_display_precision=2,
-        value_fn=lambda data: data.dollars_to_date,
+        value_fn=lambda data: data.monthly.dollars_to_date,
         native_unit_of_measurement=CURRENCY_DOLLAR,
     ),
     SouthernCompanyEntityDescription(
@@ -54,13 +55,13 @@ SENSORS: tuple[SouthernCompanyEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda data: data.total_kwh_used,
+        value_fn=lambda data: data.monthly.total_kwh_used,
     ),
     SouthernCompanyEntityDescription(
         key="average_daily_cost",
         name="Average daily cost",
         device_class=SensorDeviceClass.MONETARY,
-        value_fn=lambda data: data.average_daily_cost,
+        value_fn=lambda data: data.monthly.average_daily_cost,
         native_unit_of_measurement=CURRENCY_DOLLAR,
     ),
     SouthernCompanyEntityDescription(
@@ -68,7 +69,7 @@ SENSORS: tuple[SouthernCompanyEntityDescription, ...] = (
         name="Average daily usage",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        value_fn=lambda data: data.average_daily_usage,
+        value_fn=lambda data: data.monthly.average_daily_usage,
     ),
     SouthernCompanyEntityDescription(
         key="projected_usage_high",
@@ -76,7 +77,7 @@ SENSORS: tuple[SouthernCompanyEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL,
-        value_fn=lambda data: data.projected_usage_high,
+        value_fn=lambda data: data.monthly.projected_usage_high,
     ),
     SouthernCompanyEntityDescription(
         key="projected_usage_low",
@@ -84,14 +85,14 @@ SENSORS: tuple[SouthernCompanyEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL,
-        value_fn=lambda data: data.projected_usage_low,
+        value_fn=lambda data: data.monthly.projected_usage_low,
     ),
     SouthernCompanyEntityDescription(
         key="projected_bill_amount_low",
         name="Lower projected monthly cost",
         device_class=SensorDeviceClass.MONETARY,
         state_class=SensorStateClass.TOTAL,
-        value_fn=lambda data: data.projected_bill_amount_low,
+        value_fn=lambda data: data.monthly.projected_bill_amount_low,
         native_unit_of_measurement=CURRENCY_DOLLAR,
     ),
     SouthernCompanyEntityDescription(
@@ -99,8 +100,26 @@ SENSORS: tuple[SouthernCompanyEntityDescription, ...] = (
         name="Higher projected monthly cost",
         device_class=SensorDeviceClass.MONETARY,
         state_class=SensorStateClass.TOTAL,
-        value_fn=lambda data: data.projected_bill_amount_high,
+        value_fn=lambda data: data.monthly.projected_bill_amount_high,
         native_unit_of_measurement=CURRENCY_DOLLAR,
+    ),
+    SouthernCompanyEntityDescription(
+        key="cumulative_kwh",
+        name="Total consumption",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.cumulative_kwh,
+    ),
+    SouthernCompanyEntityDescription(
+        key="cumulative_cost",
+        name="Total cost",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement=CURRENCY_DOLLAR,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.cumulative_cost,
     ),
 )
 
@@ -154,8 +173,9 @@ class SouthernCompanySensor(
     @property
     def native_value(self) -> StateType:
         """Return the state."""
-        if self.coordinator.data is not None:
-            return self.entity_description.value_fn(
-                self.coordinator.data[self._account.number]
-            )
-        return None
+        if self.coordinator.data is None:
+            return None
+        account_data = self.coordinator.data.get(self._account.number)
+        if account_data is None:
+            return None
+        return self.entity_description.value_fn(account_data)

@@ -16,5 +16,21 @@
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "description": "Define time-of-use tariff windows as YAML. Any hour not matching a window falls into the 'default' tariff. Per-tariff statistics are emitted as southern_company:energy_usage_<tariff>_<account> and southern_company:energy_cost_<tariff>_<account>. Changing tariff names starts fresh statistic buckets \u2014 existing history is not re-bucketed. Leave blank to disable per-tariff statistics.",
+        "data": {
+          "tariffs": "Tariff schedule (YAML)"
+        }
+      }
+    },
+    "error": {
+      "invalid_yaml": "Could not parse YAML",
+      "invalid_schema": "Schema is invalid \u2014 each entry needs a name, days (0-6), start_hour, end_hour",
+      "duplicate_name": "Tariff names must be unique",
+      "bad_hours": "start_hour must be less than end_hour, both within 0-24"
+    }
   }
 }
