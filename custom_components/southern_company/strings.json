@@ -20,17 +20,17 @@
   "options": {
     "step": {
       "init": {
-        "description": "Define time-of-use tariff windows as YAML. Leave blank to disable per-tariff statistics.",
+        "description": "Define time-of-use tariff windows as JSON. Leave blank to disable per-tariff statistics.",
         "data": {
-          "tariffs": "Tariff schedule (YAML)"
+          "tariffs": "Tariff schedule (JSON)"
         },
         "data_description": {
-          "tariffs": "Each entry needs: name (string), days (list of 0=Mon\u20136=Sun), start_hour, end_hour (0\u201324). Optionally add months (list of 1\u201312) to restrict the window to specific months. Hours not matching any window fall into the 'default' tariff. The same name can appear in multiple entries. Example:\n\n- name: on-peak\n  days: [0, 1, 2, 3, 4]\n  months: [6, 7, 8, 9]\n  start_hour: 14\n  end_hour: 19\n- name: off-peak\n  days: [0, 1, 2, 3, 4, 5, 6]\n  start_hour: 0\n  end_hour: 14"
+          "tariffs": "JSON list of objects with: name (string), days (0=Mon\u20136=Sun), start_hour, end_hour (0\u201324). Optional: months (1\u201312). Hours not matching any window fall into 'default'. Example: [{\"name\":\"on-peak\",\"days\":[0,1,2,3,4],\"months\":[6,7,8,9],\"start_hour\":14,\"end_hour\":19},{\"name\":\"off-peak\",\"days\":[0,1,2,3,4,5,6],\"start_hour\":0,\"end_hour\":14}]"
         }
       }
     },
     "error": {
-      "invalid_yaml": "Could not parse YAML",
+      "invalid_yaml": "Could not parse JSON",
       "invalid_schema": "Schema is invalid \u2014 each entry needs a name, days (0-6), start_hour, end_hour",
       "bad_hours": "start_hour must be less than end_hour, both within 0-24",
       "bad_months": "months must be a list of integers 1\u201312"

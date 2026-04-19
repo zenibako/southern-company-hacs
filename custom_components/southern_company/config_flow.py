@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 import logging
 from typing import Any
 
@@ -34,7 +35,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 
 def _validate_tariffs(raw: str) -> tuple[list[dict] | None, str | None]:
-    """Parse and validate the YAML tariff schedule.
+    """Parse and validate the JSON tariff schedule.
 
     Returns ``(tariffs, error_key)``. On success, ``error_key`` is ``None``.
     Empty/whitespace input is treated as no tariffs configured.
@@ -43,7 +44,7 @@ def _validate_tariffs(raw: str) -> tuple[list[dict] | None, str | None]:
         return [], None
     try:
         parsed = yaml.safe_load(raw)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, json.JSONDecodeError):
         return None, "invalid_yaml"
     if parsed is None:
         return [], None
@@ -79,11 +80,11 @@ def _validate_tariffs(raw: str) -> tuple[list[dict] | None, str | None]:
     return parsed, None
 
 
-def _tariffs_to_yaml(tariffs: list[dict]) -> str:
-    """Serialize stored tariffs back to a YAML string for the options form."""
+def _tariffs_to_json(tariffs: list[dict]) -> str:
+    """Serialize stored tariffs back to a JSON string for the options form."""
     if not tariffs:
         return ""
-    return yaml.safe_dump(tariffs, sort_keys=False).strip()
+    return json.dumps(tariffs, separators=(",", ":"))
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -174,20 +175,20 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> ConfigFlowResult:
         """Manage tariff windows."""
         errors: dict[str, str] = {}
-        current_yaml = _tariffs_to_yaml(
+        current_json = _tariffs_to_json(
             self.config_entry.options.get(CONF_TARIFFS, [])
         )
         if user_input is not None:
             tariffs, error_key = _validate_tariffs(user_input.get(CONF_TARIFFS, ""))
             if error_key is not None:
                 errors["base"] = error_key
-                current_yaml = user_input.get(CONF_TARIFFS, "")
+                current_json = user_input.get(CONF_TARIFFS, "")
             else:
                 return self.async_create_entry(
                     title="", data={CONF_TARIFFS: tariffs}
                 )
         data_schema = vol.Schema(
-            {vol.Optional(CONF_TARIFFS, default=current_yaml): str}
+            {vol.Optional(CONF_TARIFFS, default=current_json): str}
         )
         return self.async_show_form(
             step_id="init", data_schema=data_schema, errors=errors
