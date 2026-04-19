@@ -17,8 +17,11 @@ from southern_company_api.exceptions import NoRequestTokenFound
 from southern_company_api.exceptions import NoScTokenFound
 from southern_company_api.parser import SouthernCompanyAPI
 
+from . import parser_patch
 from .const import DOMAIN
 from .coordinator import SouthernCompanyCoordinator
+
+parser_patch.apply()
 
 PLATFORMS = [Platform.SENSOR]
 failures = {}
