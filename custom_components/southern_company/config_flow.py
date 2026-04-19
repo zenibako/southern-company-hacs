@@ -60,7 +60,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_authenticate(
         self, user_input: Mapping[str, Any], errors: dict[str, str]
     ) -> ConfigFlowResult | None:
-        """Handle authentication for all flows to reduce repetition of code."""
+        """Handle authentication for all flows. Returns entry on success, None on failure."""
         account_type = user_input.get(CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_SOUTHERN_COMPANY)
 
         if account_type == ACCOUNT_TYPE_NICOR_GAS:
@@ -125,40 +125,41 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_reauth_confirm(entry_data)
 
     async def async_step_reauth_confirm(
-        self, user_input: Mapping[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle a flow initiated by reauthentication."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            data_schema = vol.Schema(
-                {
-                    vol.Required(CONF_USERNAME, default=user_input[CONF_USERNAME]): str,
-                    vol.Required(CONF_PASSWORD): str,
-                    vol.Required(
-                        CONF_ACCOUNT_TYPE,
-                        default=user_input.get(
-                            CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_SOUTHERN_COMPANY
-                        ),
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(
-                                    value=ACCOUNT_TYPE_SOUTHERN_COMPANY,
-                                    label="Southern Company",
-                                ),
-                                SelectOptionDict(
-                                    value=ACCOUNT_TYPE_NICOR_GAS, label="Nicor Gas"
-                                ),
-                            ],
-                        )
-                    ),
-                }
-            )
             auth = await self.async_authenticate(user_input, errors)
             if auth is not None:
                 return auth
-        else:
-            data_schema = STEP_USER_DATA_SCHEMA
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_USERNAME,
+                    default=(user_input or {}).get(CONF_USERNAME, ""),
+                ): str,
+                vol.Required(CONF_PASSWORD): str,
+                vol.Required(
+                    CONF_ACCOUNT_TYPE,
+                    default=(user_input or {}).get(
+                        CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_SOUTHERN_COMPANY
+                    ),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(
+                                value=ACCOUNT_TYPE_SOUTHERN_COMPANY,
+                                label="Southern Company",
+                            ),
+                            SelectOptionDict(
+                                value=ACCOUNT_TYPE_NICOR_GAS, label="Nicor Gas"
+                            ),
+                        ],
+                    )
+                ),
+            }
+        )
         return self.async_show_form(
             step_id="reauth_confirm", data_schema=data_schema, errors=errors
         )
