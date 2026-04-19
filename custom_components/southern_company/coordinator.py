@@ -85,6 +85,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     str, southern_company_api.account.MonthlyUsage
                 ] = {}
                 for account in await self._southern_company_connection.accounts:
+                    if not account.service_point_number:
+                        _LOGGER.warning(
+                            "Skipping account %s: no service point number",
+                            account.number,
+                        )
+                        continue
                     _LOGGER.debug("Updating sensor data for %s", account.number)
                     monthly_by_account[account.number] = await account.get_month_data(
                         await self._southern_company_connection.jwt
@@ -116,6 +122,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("Jwt is None")
         tariffs = self._get_tariffs()
         for account in await self._southern_company_connection.accounts:
+            if not account.service_point_number:
+                continue
             _LOGGER.debug("Updating Statistics for %s", account.number)
             cost_statistic_id = f"{DOMAIN}:energy_cost_{account.number}"
             usage_statistic_id = f"{DOMAIN}:energy_usage_{account.number}"
