@@ -207,6 +207,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 source=DOMAIN,
                 statistic_id=cost_statistic_id,
                 unit_of_measurement=None,
+                unit_class=None,
             )
             usage_metadata = StatisticMetaData(
                 has_mean=False,
@@ -215,6 +216,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 source=DOMAIN,
                 statistic_id=usage_statistic_id,
                 unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                unit_class=UnitOfEnergy,
             )
 
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
