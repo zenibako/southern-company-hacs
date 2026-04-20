@@ -280,7 +280,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 source=DOMAIN,
                 statistic_id=usage_statistic_id,
                 unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-                unit_class=UnitOfEnergy,
+                unit_class="energy",
             )
 
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
@@ -312,7 +312,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                         source=DOMAIN,
                         statistic_id=f"{DOMAIN}:energy_usage_{tariff_name}_{account.number}",
                         unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-                        unit_class=UnitOfEnergy,
+                        unit_class="energy",
                     ),
                     stats,
                 )
