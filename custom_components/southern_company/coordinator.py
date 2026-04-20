@@ -337,11 +337,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
             # Extrapolate estimated stats for the lag gap (typically ~48h).
             monthly = monthly_by_account.get(account.number)
-            if (
-                monthly is not None
-                and cost_statistics
-                and usage_statistics
-            ):
+            if monthly is not None and cost_statistics and usage_statistics:
                 await self._extrapolate_gap(
                     account,
                     monthly,
@@ -404,9 +400,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         When real data arrives, it overwrites these estimates.
         """
         now = datetime.datetime.now(datetime.timezone.utc)
-        last_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(
-            hours=1
-        )
+        last_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
 
         # Find the latest actual statistic timestamp.
         last_stats = await get_instance(self.hass).async_add_executor_job(

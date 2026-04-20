@@ -223,13 +223,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         mode=SelectSelectorMode.LIST,
                     )
                 ),
-                vol.Required("start_hour"): vol.All(
-                    vol.Coerce(int), vol.Range(0, 23)
-                ),
+                vol.Required("start_hour"): vol.All(vol.Coerce(int), vol.Range(0, 23)),
                 vol.Required("end_hour"): vol.All(vol.Coerce(int), vol.Range(1, 24)),
-                vol.Optional("rate"): vol.All(
-                    vol.Coerce(float), vol.Range(min=0)
-                ),
+                vol.Optional("rate"): vol.All(vol.Coerce(float), vol.Range(min=0)),
                 vol.Optional("months"): SelectSelector(
                     SelectSelectorConfig(
                         options=MONTH_OPTIONS,
@@ -250,8 +246,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             self._tariffs = [t for t in self._tariffs if t["name"] not in names]
             return await self.async_step_init()
         name_options = [
-            SelectOptionDict(value=t["name"], label=t["name"])
-            for t in self._tariffs
+            SelectOptionDict(value=t["name"], label=t["name"]) for t in self._tariffs
         ]
         schema = vol.Schema(
             {
