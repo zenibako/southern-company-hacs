@@ -21,6 +21,7 @@ from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .const import CONF_TARIFFS
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,6 +34,35 @@ class AccountData:
     monthly: southern_company_api.account.MonthlyUsage
     cumulative_kwh: float
     cumulative_cost: float
+
+
+def match_tariff(tariffs: list[dict], when: datetime.datetime) -> str:
+    """Return the first matching tariff name for ``when``, else 'default'."""
+    if not tariffs:
+        return "default"
+    weekday = when.weekday()
+    hour = when.hour
+    month = when.month  # 1-12
+    for tariff in tariffs:
+        days = tariff.get("days", [])
+        start_hour = tariff.get("start_hour", 0)
+        end_hour = tariff.get("end_hour", 24)
+        months = tariff.get("months")
+        name = tariff.get("name")
+        if name and weekday in days and start_hour <= hour < end_hour:
+            if months is None or month in months:
+                return name
+    return "default"
+
+
+def tariff_rate(tariffs: list[dict], tariff_name: str) -> float | None:
+    """Return the rate ($/kWh) for a tariff name, or None if not set."""
+    for tariff in tariffs:
+        if tariff.get("name") == tariff_name:
+            rate = tariff.get("rate")
+            if isinstance(rate, (int, float)) and rate >= 0:
+                return float(rate)
+    return None
 
 
 class SouthernCompanyCoordinator(DataUpdateCoordinator):
@@ -94,6 +124,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
         raise UpdateFailed("No jwt token")
 
+    def _get_tariffs(self) -> list[dict]:
+        """Return configured tariff windows, or an empty list."""
+        if self._entry is None:
+            return []
+        return list(self._entry.options.get(CONF_TARIFFS, []))
+
     async def _insert_statistics(
         self,
         monthly_by_account: dict[str, southern_company_api.account.MonthlyUsage],
@@ -101,7 +137,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         """Insert Southern Company statistics."""
         if await self._southern_company_connection.jwt is None:
             raise UpdateFailed("Jwt is None")
-
+        tariffs = self._get_tariffs()
         for account in await self._southern_company_connection.accounts:
             if not account.service_point_number:
                 continue
@@ -177,6 +213,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     )
                     _usage_sum = usage_stat[usage_statistic_id][0]["sum"] or 0.0
 
+            # Per-tariff running sums, seeded lazily from the most recent row.
+            tariff_cost_sums: dict[str, float] = {}
+            tariff_usage_sums: dict[str, float] = {}
+            tariff_cost_stats: dict[str, list[StatisticData]] = {}
+            tariff_usage_stats: dict[str, list[StatisticData]] = {}
+
             cost_statistics: list[StatisticData] = []
             usage_statistics: list[StatisticData] = []
 
@@ -202,6 +244,42 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     StatisticData(start=from_time, state=data.usage, sum=_usage_sum)
                 )
 
+                if tariffs:
+                    tariff_name = match_tariff(tariffs, data.time)
+                    rate = tariff_rate(tariffs, tariff_name)
+                    if tariff_name not in tariff_cost_sums:
+                        tariff_cost_sums[tariff_name] = await self._seed_tariff_sum(
+                            f"{DOMAIN}:energy_cost_{tariff_name}_{account.number}",
+                            last_stats_time,
+                        )
+                        tariff_usage_sums[tariff_name] = await self._seed_tariff_sum(
+                            f"{DOMAIN}:energy_usage_{tariff_name}_{account.number}",
+                            last_stats_time,
+                        )
+                        tariff_cost_stats[tariff_name] = []
+                        tariff_usage_stats[tariff_name] = []
+                    # Use the actual API cost if available, otherwise
+                    # compute from rate * kWh.
+                    tariff_cost = data.cost
+                    if rate is not None:
+                        tariff_cost = round(data.usage * rate, 4)
+                    tariff_cost_sums[tariff_name] += tariff_cost
+                    tariff_usage_sums[tariff_name] += data.usage
+                    tariff_cost_stats[tariff_name].append(
+                        StatisticData(
+                            start=from_time,
+                            state=tariff_cost,
+                            sum=tariff_cost_sums[tariff_name],
+                        )
+                    )
+                    tariff_usage_stats[tariff_name].append(
+                        StatisticData(
+                            start=from_time,
+                            state=data.usage,
+                            sum=tariff_usage_sums[tariff_name],
+                        )
+                    )
+
             cost_metadata = StatisticMetaData(
                 has_mean=False,
                 has_sum=True,
@@ -226,9 +304,44 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
             async_add_external_statistics(self.hass, usage_metadata, usage_statistics)
 
+            for tariff_name, stats in tariff_cost_stats.items():
+                async_add_external_statistics(
+                    self.hass,
+                    StatisticMetaData(
+                        has_mean=False,
+                        has_sum=True,
+                        mean_type=StatisticMeanType.NONE,
+                        name=f"Southern Company {account.name} cost ({tariff_name})",
+                        source=DOMAIN,
+                        statistic_id=f"{DOMAIN}:energy_cost_{tariff_name}_{account.number}",
+                        unit_of_measurement=None,
+                        unit_class=None,
+                    ),
+                    stats,
+                )
+            for tariff_name, stats in tariff_usage_stats.items():
+                async_add_external_statistics(
+                    self.hass,
+                    StatisticMetaData(
+                        has_mean=False,
+                        has_sum=True,
+                        mean_type=StatisticMeanType.NONE,
+                        name=f"Southern Company {account.name} usage ({tariff_name})",
+                        source=DOMAIN,
+                        statistic_id=f"{DOMAIN}:energy_usage_{tariff_name}_{account.number}",
+                        unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                        unit_class="energy",
+                    ),
+                    stats,
+                )
+
             # Extrapolate estimated stats for the lag gap (typically ~48h).
             monthly = monthly_by_account.get(account.number)
-            if monthly is not None and cost_statistics and usage_statistics:
+            if (
+                monthly is not None
+                and cost_statistics
+                and usage_statistics
+            ):
                 await self._extrapolate_gap(
                     account,
                     monthly,
@@ -241,6 +354,37 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             # Commit the account's cumulative sums only after a successful loop.
             self._cost_sum_by_account[account.number] = _cost_sum
             self._usage_sum_by_account[account.number] = _usage_sum
+
+    async def _seed_tariff_sum(
+        self, statistic_id: str, last_stats_time: float | None
+    ) -> float:
+        """Seed a tariff cumulative sum from the DB, aligned with ``last_stats_time``.
+
+        Returns the cumulative sum at or before ``last_stats_time`` so the
+        running total stays consistent with the main (non-tariff) sum's
+        starting point. On first ever write (no prior rows), returns 0.
+        """
+        if last_stats_time is None:
+            return 0.0
+        ts = (
+            last_stats_time
+            if isinstance(last_stats_time, float)
+            else last_stats_time.timestamp()
+        )
+        start = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+        stat = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start - timedelta(hours=1),
+            start + timedelta(hours=1),
+            [statistic_id],
+            "hour",
+            None,
+            {"sum"},
+        )
+        if statistic_id not in stat or not stat[statistic_id]:
+            return 0.0
+        return stat[statistic_id][0]["sum"] or 0.0
 
     async def _extrapolate_gap(
         self,
@@ -257,11 +401,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         from showing blank for recent days, we spread the difference between the
         monthly total and the last known hourly sum evenly across the gap hours.
 
-        On the next coordinator cycle, when real hourly data arrives for those
-        hours, it will overwrite these estimates.
+        When real data arrives, it overwrites these estimates.
         """
         now = datetime.datetime.now(datetime.timezone.utc)
-        last_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        last_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(
+            hours=1
+        )
 
         # Find the latest actual statistic timestamp.
         last_stats = await get_instance(self.hass).async_add_executor_job(

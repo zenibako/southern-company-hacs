@@ -73,6 +73,32 @@ Configuration is done in the UI.
 
 <!---->
 
+## Tariff Windows
+
+The integration can split hourly usage and cost statistics into per-tariff buckets. Configure tariff windows through **Settings > Devices & Services > Southern Company > Configure**.
+
+Each tariff window defines:
+- **Name** — a label for the rate tier (e.g. `on_peak`, `off_peak`, `super_off_peak`)
+- **Days** — which days of the week (0 = Monday through 6 = Sunday)
+- **Start hour / End hour** — the time window (half-open interval, e.g. 14–19 means 2 PM–7 PM)
+- **Months** — (optional) restrict the window to specific months (1 = January through 12 = December)
+- **Rate** — (optional) cost per kWh in dollars. When set, the integration computes cost as `kWh × rate` instead of using the API's actual cost for that hour
+
+Hours not matching any tariff window fall into the `default` tier and use the actual API cost.
+
+### Example: Georgia Power Overnight Advantage
+
+| Tier | Rate ($/kWh) | Hours | Days | Months |
+|------|-------------|-------|------|--------|
+| on_peak | 0.2979 | 14–19 | Mon–Fri | Jun–Sep |
+| off_peak | 0.1017 | 7–23 | Every day | — |
+| super_off_peak | 0.0219 | 0–7 | Every day | — |
+
+Add a fourth entry for the off-peak evening transition on summer weekdays:
+- off_peak, days 0–4, months 6–9, start_hour 19, end_hour 23
+
+When `rate` is set, per-tariff cost statistics use `kWh × rate`. When `rate` is omitted, the actual hourly cost from the API is used instead. This lets you use published flat rates for segmentation while the API cost data is still lagging, and switch to actual costs later.
+
 ## Energy Dashboard and the 48-hour lag
 
 Southern Company's hourly usage API typically lags about 48 hours behind real time. This means the Energy Dashboard would show blank for today and yesterday even though historical data is present.
@@ -81,20 +107,14 @@ The integration automatically **extrapolates** estimated hourly statistics to fi
 
 When real hourly data becomes available from Southern Company (typically within 48 hours), the integration overwrites the estimates with actual readings. You may see a small adjustment in the Energy Dashboard at that point as the flat estimate is replaced by the real hourly values.
 
-## Utility Meter and per-rate usage
+## Energy Dashboard Setup
 
-Each account exposes a `Total consumption` sensor (`sensor.*_total_consumption`, `state_class: total_increasing`, unit `kWh`) that accumulates indefinitely across billing cycles. Use Home Assistant's built-in **Utility Meter** helper to split it into per-tariff buckets.
+The integration writes two types of long-term statistics per account:
 
-**Caveat — time-of-use attribution.** Southern Company's hourly readings lag about 48 hours, and the Utility Meter helper attributes deltas to whichever tariff is *active when Home Assistant sees the delta*, not the hour the energy was actually consumed. This can cause small inaccuracies for TOU billing. For most residential plans the discrepancy is minor.
+- **`southern_company:energy_usage_<account>`** — total kWh (and per-tariff if configured)
+- **`southern_company:energy_cost_<account>`** — total cost in USD (and per-tariff if configured)
 
-### Setup
-
-1. Go to **Settings > Devices & Services > Helpers > Add Helper > Utility Meter**.
-2. Select the `Total consumption` sensor for your Southern Company account.
-3. Choose **Tariffs** and define your rate periods (e.g. `on_peak`, `off_peak`).
-4. Create an automation or use the Utility Meter's built-in scheduling to switch between tariffs based on time of day.
-
-The resulting per-tariff sensors can be added to the Energy dashboard as separate consumption sources.
+To add them to the Energy Dashboard, go to **Settings > Dashboards > Energy** and add each statistic as a grid consumption source. Per-tariff statistics (e.g. `energy_usage_on_peak_*`) can be added as separate sources with their corresponding rate for cost tracking.
 
 ## Contributions are welcome!
 

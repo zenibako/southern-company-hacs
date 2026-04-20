@@ -16,5 +16,37 @@
                 }
             }
         }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "description": "Manage tariff windows for per-rate statistics. Save to finish, or add/remove tariff entries.",
+                "data": {
+                    "action": "Action"
+                }
+            },
+            "tariff": {
+                "description": "Add a tariff window. Hours not matching any window fall into the default tariff.",
+                "data": {
+                    "name": "Name",
+                    "days": "Days of week (0 Mon through 6 Sun)",
+                    "start_hour": "Start hour (0-23)",
+                    "end_hour": "End hour (1-24)",
+                    "rate": "Rate in dollars per kWh (optional)",
+                    "months": "Months (1 Jan through 12 Dec, optional)"
+                }
+            },
+            "remove": {
+                "description": "Select tariff entries to remove.",
+                "data": {
+                    "remove": "Tariffs to remove"
+                }
+            }
+        },
+        "error": {
+            "name_required": "Tariff name is required",
+            "name_reserved": "The name 'default' is reserved",
+            "bad_hours": "Start hour must be less than end hour (0-24)"
+        }
     }
 }
