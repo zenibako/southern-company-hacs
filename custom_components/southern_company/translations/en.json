@@ -16,24 +16,5 @@
                 }
             }
         }
-    },
-    "options": {
-        "step": {
-            "init": {
-                "description": "Define time-of-use tariff windows as JSON. Leave blank to disable per-tariff statistics.",
-                "data": {
-                    "tariffs": "Tariff schedule (JSON)"
-                },
-                "data_description": {
-                    "tariffs": "JSON list of objects. Each entry needs name (string), days (list, 0 Mon through 6 Sun), start_hour (int), end_hour (int). Optional: months (list of 1 through 12). Unmatched hours use 'default'. Example: [{\"name\":\"on-peak\",\"days\":[0,1,2,3,4],\"start_hour\":14,\"end_hour\":19}]"
-                }
-            }
-        },
-        "error": {
-            "invalid_yaml": "Could not parse JSON",
-            "invalid_schema": "Schema is invalid \u2014 each entry needs a name, days (0-6), start_hour, end_hour",
-            "bad_hours": "start_hour must be less than end_hour, both within 0-24",
-            "bad_months": "months must be a list of integers 1\u201312"
-        }
     }
 }
