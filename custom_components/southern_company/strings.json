@@ -25,7 +25,7 @@
           "tariffs": "Tariff schedule (JSON)"
         },
         "data_description": {
-          "tariffs": "JSON list of objects. Fields: name (string), days (list, 0 Mon through 6 Sun), start_hour and end_hour (0-24), months (optional, list of 1-12). Hours not matching any window fall into 'default'. Example: [{{\"name\":\"on-peak\",\"days\":[0,1,2,3,4],\"months\":[6,7,8,9],\"start_hour\":14,\"end_hour\":19}},{{\"name\":\"off-peak\",\"days\":[0,1,2,3,4,5,6],\"start_hour\":0,\"end_hour\":14}}]"
+          "tariffs": "JSON list of objects. Each entry needs name (string), days (list, 0 Mon through 6 Sun), start_hour (int), end_hour (int). Optional: months (list of 1 through 12). Unmatched hours use 'default'. Example: [{\"name\":\"on-peak\",\"days\":[0,1,2,3,4],\"start_hour\":14,\"end_hour\":19}]"
         }
       }
     },
