@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import json
 import logging
 from typing import Any
 
@@ -18,6 +17,12 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .const import CONF_TARIFFS
 from .const import DOMAIN
@@ -30,6 +35,31 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): str,
     }
 )
+
+DAY_OPTIONS = [
+    SelectOptionDict(value="0", label="Monday"),
+    SelectOptionDict(value="1", label="Tuesday"),
+    SelectOptionDict(value="2", label="Wednesday"),
+    SelectOptionDict(value="3", label="Thursday"),
+    SelectOptionDict(value="4", label="Friday"),
+    SelectOptionDict(value="5", label="Saturday"),
+    SelectOptionDict(value="6", label="Sunday"),
+]
+
+MONTH_OPTIONS = [
+    SelectOptionDict(value="1", label="January"),
+    SelectOptionDict(value="2", label="February"),
+    SelectOptionDict(value="3", label="March"),
+    SelectOptionDict(value="4", label="April"),
+    SelectOptionDict(value="5", label="May"),
+    SelectOptionDict(value="6", label="June"),
+    SelectOptionDict(value="7", label="July"),
+    SelectOptionDict(value="8", label="August"),
+    SelectOptionDict(value="9", label="September"),
+    SelectOptionDict(value="10", label="October"),
+    SelectOptionDict(value="11", label="November"),
+    SelectOptionDict(value="12", label="December"),
+]
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -133,10 +163,18 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 self._tariffs = tariffs
                 return await self.async_step_remove()
             return self.async_create_entry(title="", data={CONF_TARIFFS: tariffs})
+        options = [
+            SelectOptionDict(value="save", label="Save and finish"),
+            SelectOptionDict(value="add", label="Add tariff"),
+            SelectOptionDict(value="remove", label="Remove tariff"),
+        ]
         schema = vol.Schema(
             {
-                vol.Required("action", default="save"): vol.In(
-                    {"save": "Save and finish", "add": "Add tariff", "remove": "Remove tariff"}
+                vol.Required("action", default="save"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=options,
+                        mode=SelectSelectorMode.LIST,
+                    )
                 )
             }
         )
@@ -159,32 +197,45 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 if not (0 <= start_hour < end_hour <= 24):
                     errors["base"] = "bad_hours"
                 else:
-                    entry = {
+                    days = [int(d) for d in user_input["days"]]
+                    months_raw = user_input.get("months")
+                    months = [int(m) for m in months_raw] if months_raw else None
+                    entry: dict[str, Any] = {
                         "name": name,
-                        "days": user_input["days"],
+                        "days": days,
                         "start_hour": start_hour,
                         "end_hour": end_hour,
                     }
                     rate = user_input.get("rate")
                     if rate is not None:
                         entry["rate"] = rate
-                    months = user_input.get("months")
                     if months:
                         entry["months"] = months
                     self._tariffs.append(entry)
-                    self.hass.data.setdefault(DOMAIN, {})
                     return await self.async_step_init()
         schema = vol.Schema(
             {
                 vol.Required("name"): str,
-                vol.Required("days"): vol.All(
-                    vol.Coerce(list), [vol.All(vol.Coerce(int), vol.Range(0, 6))]
+                vol.Required("days"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=DAY_OPTIONS,
+                        multiple=True,
+                        mode=SelectSelectorMode.LIST,
+                    )
                 ),
-                vol.Required("start_hour"): vol.All(vol.Coerce(int), vol.Range(0, 23)),
+                vol.Required("start_hour"): vol.All(
+                    vol.Coerce(int), vol.Range(0, 23)
+                ),
                 vol.Required("end_hour"): vol.All(vol.Coerce(int), vol.Range(1, 24)),
-                vol.Optional("rate"): vol.Coerce(float),
-                vol.Optional("months"): vol.All(
-                    vol.Coerce(list), [vol.All(vol.Coerce(int), vol.Range(1, 12))]
+                vol.Optional("rate"): vol.All(
+                    vol.Coerce(float), vol.Range(min=0)
+                ),
+                vol.Optional("months"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=MONTH_OPTIONS,
+                        multiple=True,
+                        mode=SelectSelectorMode.LIST,
+                    )
                 ),
             }
         )
@@ -196,10 +247,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Remove a tariff entry."""
         if user_input is not None and user_input.get("remove"):
             names = user_input["remove"]
-            self._tariffs = [t for t in self._tariffs if t["name"] in names]
+            self._tariffs = [t for t in self._tariffs if t["name"] not in names]
             return await self.async_step_init()
-        names = [t["name"] for t in self._tariffs]
+        name_options = [
+            SelectOptionDict(value=t["name"], label=t["name"])
+            for t in self._tariffs
+        ]
         schema = vol.Schema(
-            {vol.Required("remove"): vol.All(vol.Coerce(list), [vol.In(names)])}
+            {
+                vol.Required("remove"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=name_options,
+                        multiple=True,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                )
+            }
         )
         return self.async_show_form(step_id="remove", data_schema=schema)
