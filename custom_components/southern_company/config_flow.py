@@ -18,12 +18,16 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.selector import (
+    BooleanSelector,
+    EntitySelector,
+    EntitySelectorConfig,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
 )
 
+from .const import CONF_HOLIDAY_CALENDAR
 from .const import CONF_TARIFFS
 from .const import DOMAIN
 
@@ -154,15 +158,23 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> ConfigFlowResult:
         """Manage the tariff list."""
         tariffs = list(self.config_entry.options.get(CONF_TARIFFS, []))
+        current_calendar = self.config_entry.options.get(CONF_HOLIDAY_CALENDAR, "")
         if user_input is not None:
             action = user_input.get("action", "save")
+            self._holiday_calendar = user_input.get(CONF_HOLIDAY_CALENDAR, "")
             if action == "add":
                 self._tariffs = tariffs
                 return await self.async_step_tariff()
             if action == "remove" and tariffs:
                 self._tariffs = tariffs
                 return await self.async_step_remove()
-            return self.async_create_entry(title="", data={CONF_TARIFFS: tariffs})
+            return self.async_create_entry(
+                title="",
+                data={
+                    CONF_TARIFFS: tariffs,
+                    CONF_HOLIDAY_CALENDAR: self._holiday_calendar,
+                },
+            )
         options = [
             SelectOptionDict(value="save", label="Save and finish"),
             SelectOptionDict(value="add", label="Add tariff"),
@@ -170,12 +182,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         ]
         schema = vol.Schema(
             {
+                vol.Optional(
+                    CONF_HOLIDAY_CALENDAR, default=current_calendar
+                ): EntitySelector(EntitySelectorConfig(domain="calendar")),
                 vol.Required("action", default="save"): SelectSelector(
                     SelectSelectorConfig(
                         options=options,
                         mode=SelectSelectorMode.LIST,
                     )
-                )
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
@@ -211,6 +226,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         entry["rate"] = rate
                     if months:
                         entry["months"] = months
+                    if user_input.get("skip_on_holidays"):
+                        entry["skip_on_holidays"] = True
                     self._tariffs.append(entry)
                     return await self.async_step_init()
         schema = vol.Schema(
@@ -233,6 +250,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         mode=SelectSelectorMode.LIST,
                     )
                 ),
+                vol.Optional("skip_on_holidays"): BooleanSelector(),
             }
         )
         return self.async_show_form(step_id="tariff", data_schema=schema, errors=errors)

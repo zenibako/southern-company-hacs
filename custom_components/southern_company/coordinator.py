@@ -21,8 +21,43 @@ from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .const import CONF_HOLIDAY_CALENDAR
 from .const import CONF_TARIFFS
 from .const import DOMAIN
+
+
+async def _is_holiday(
+    hass: HomeAssistant,
+    calendar_entity: str | None,
+    when: datetime.datetime,
+    _cache: dict[str, tuple[datetime.date, bool]],
+) -> bool:
+    """Return True if the given date is a holiday according to the calendar entity."""
+    if not calendar_entity:
+        return False
+    date = when.date()
+    cached = _cache.get(calendar_entity)
+    if cached and cached[0] == date:
+        return cached[1]
+    try:
+        start = datetime.datetime.combine(date, datetime.time.min, tzinfo=when.tzinfo)
+        end = datetime.datetime.combine(
+            date + timedelta(days=1), datetime.time.min, tzinfo=when.tzinfo
+        )
+        component = hass.data.get("calendar")
+        if component is None:
+            return False
+        calendar = component.get_entity(calendar_entity)
+        if calendar is None:
+            return False
+        events = await calendar.async_get_events(hass, start, end)
+        result = len(events) > 0
+    except Exception:
+        _LOGGER.debug("Could not check holiday calendar %s", calendar_entity)
+        result = False
+    _cache[calendar_entity] = (date, result)
+    return result
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,13 +71,22 @@ class AccountData:
     cumulative_cost: float
 
 
-def match_tariff(tariffs: list[dict], when: datetime.datetime) -> str:
+async def match_tariff(
+    tariffs: list[dict],
+    when: datetime.datetime,
+    hass: HomeAssistant | None = None,
+    holiday_calendar: str | None = None,
+    holiday_cache: dict[str, tuple[datetime.date, bool]] | None = None,
+) -> str:
     """Return the first matching tariff name for ``when``, else 'default'."""
     if not tariffs:
         return "default"
     weekday = when.weekday()
     hour = when.hour
     month = when.month  # 1-12
+    is_hol = False
+    if hass and holiday_calendar and holiday_cache:
+        is_hol = await _is_holiday(hass, holiday_calendar, when, holiday_cache or {})
     for tariff in tariffs:
         days = tariff.get("days", [])
         start_hour = tariff.get("start_hour", 0)
@@ -51,6 +95,8 @@ def match_tariff(tariffs: list[dict], when: datetime.datetime) -> str:
         name = tariff.get("name")
         if name and weekday in days and start_hour <= hour < end_hour:
             if months is None or month in months:
+                if tariff.get("skip_on_holidays") and is_hol:
+                    continue
                 return name
     return "default"
 
@@ -138,6 +184,10 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         if await self._southern_company_connection.jwt is None:
             raise UpdateFailed("Jwt is None")
         tariffs = self._get_tariffs()
+        holiday_calendar = (
+            self._entry.options.get(CONF_HOLIDAY_CALENDAR, "") if self._entry else ""
+        ) or None
+        holiday_cache: dict[str, tuple[datetime.date, bool]] = {}
         for account in await self._southern_company_connection.accounts:
             if not account.service_point_number:
                 continue
@@ -245,7 +295,9 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 )
 
                 if tariffs:
-                    tariff_name = match_tariff(tariffs, data.time)
+                    tariff_name = await match_tariff(
+                        tariffs, data.time, self.hass, holiday_calendar, holiday_cache
+                    )
                     rate = tariff_rate(tariffs, tariff_name)
                     if tariff_name not in tariff_cost_sums:
                         tariff_cost_sums[tariff_name] = await self._seed_tariff_sum(

@@ -83,21 +83,26 @@ Each tariff window defines:
 - **Start hour / End hour** — the time window (half-open interval, e.g. 14–19 means 2 PM–7 PM)
 - **Months** — (optional) restrict the window to specific months (1 = January through 12 = December)
 - **Rate** — (optional) cost per kWh in dollars. When set, the integration computes cost as `kWh × rate` instead of using the API's actual cost for that hour
+- **Skip on holidays** — (optional) skip this tariff on holidays. Requires a holiday calendar to be set
 
-Hours not matching any tariff window fall into the `default` tier and use the actual API cost.
+### Overlapping windows
+
+Tariffs are matched **first-wins**: the integration checks each entry in order and uses the first one that matches. List more specific tariffs (e.g. on_peak) before broader ones (e.g. off_peak). If you list off_peak first, it will shadow on_peak entirely.
+
+### Holiday calendar
+
+Set a holiday calendar entity (e.g. `calendar.us_holidays`) in the options flow. Then check **Skip on holidays** on any tariff that should not apply on holidays (typically on_peak). On a holiday, that tariff is skipped and the next matching entry wins.
 
 ### Example: Georgia Power Overnight Advantage
 
-| Tier | Rate ($/kWh) | Hours | Days | Months |
-|------|-------------|-------|------|--------|
-| on_peak | 0.2979 | 14–19 | Mon–Fri | Jun–Sep |
-| off_peak | 0.1017 | 7–23 | Every day | — |
-| super_off_peak | 0.0219 | 0–7 | Every day | — |
+| Order | Name | Rate ($/kWh) | Hours | Days | Months | Skip holidays |
+|-------|------|-------------|-------|------|--------|---------------|
+| 1 | on_peak | 0.2979 | 14–19 | Mon–Fri | Jun–Sep | Yes |
+| 2 | off_peak | 0.1017 | 7–23 | Every day | — | No |
+| 3 | super_off_peak | 0.0219 | 0–7 | Every day | — | No |
+| 4 | off_peak_evening | 0.1017 | 19–23 | Mon–Fri | Jun–Sep | No |
 
-Add a fourth entry for the off-peak evening transition on summer weekdays:
-- off_peak, days 0–4, months 6–9, start_hour 19, end_hour 23
-
-When `rate` is set, per-tariff cost statistics use `kWh × rate`. When `rate` is omitted, the actual hourly cost from the API is used instead. This lets you use published flat rates for segmentation while the API cost data is still lagging, and switch to actual costs later.
+On a summer holiday (e.g. Independence Day), on_peak is skipped and off_peak (order 2) matches instead — exactly the correct rate schedule.
 
 ## Energy Dashboard and the 48-hour lag
 

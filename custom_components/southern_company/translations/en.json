@@ -22,18 +22,20 @@
             "init": {
                 "description": "Manage tariff windows for per-rate statistics.",
                 "data": {
+                    "holiday_calendar": "Holiday calendar entity",
                     "action": "Action"
                 }
             },
             "tariff": {
-                "description": "Add a tariff window. Hours not matching any window fall into the default tariff.",
+                "description": "Add a tariff window. Hours not matching any window fall into the default tariff. Tariffs are matched in order; list more specific tariffs first.",
                 "data": {
                     "name": "Name",
                     "days": "Days of week",
                     "start_hour": "Start hour (0-23)",
                     "end_hour": "End hour (1-24)",
                     "rate": "Rate in $/kWh (optional)",
-                    "months": "Months (optional)"
+                    "months": "Months (optional)",
+                    "skip_on_holidays": "Skip on holidays"
                 }
             },
             "remove": {
