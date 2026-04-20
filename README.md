@@ -73,6 +73,14 @@ Configuration is done in the UI.
 
 <!---->
 
+## Energy Dashboard and the 48-hour lag
+
+Southern Company's hourly usage API typically lags about 48 hours behind real time. This means the Energy Dashboard would show blank for today and yesterday even though historical data is present.
+
+The integration automatically **extrapolates** estimated hourly statistics to fill this gap. It spreads the difference between the current monthly total (which is near-real-time) and the last known hourly sum evenly across the missing hours. These estimates appear as a flat average — they won't reflect your actual per-hour usage patterns, but they keep the Energy Dashboard populated.
+
+When real hourly data becomes available from Southern Company (typically within 48 hours), the integration overwrites the estimates with actual readings. You may see a small adjustment in the Energy Dashboard at that point as the flat estimate is replaced by the real hourly values.
+
 ## Utility Meter and per-rate usage
 
 Each account exposes a `Total consumption` sensor (`sensor.*_total_consumption`, `state_class: total_increasing`, unit `kWh`) that accumulates indefinitely across billing cycles. Use Home Assistant's built-in **Utility Meter** helper to split it into per-tariff buckets.

@@ -80,7 +80,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                         await self._southern_company_connection.jwt
                     )
                 # Note: insert statistics can be somewhat slow on first setup.
-                await self._insert_statistics()
+                await self._insert_statistics(monthly_by_account)
                 return {
                     number: AccountData(
                         monthly=monthly,
@@ -94,10 +94,14 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
         raise UpdateFailed("No jwt token")
 
-    async def _insert_statistics(self) -> None:
+    async def _insert_statistics(
+        self,
+        monthly_by_account: dict[str, southern_company_api.account.MonthlyUsage],
+    ) -> None:
         """Insert Southern Company statistics."""
         if await self._southern_company_connection.jwt is None:
             raise UpdateFailed("Jwt is None")
+
         for account in await self._southern_company_connection.accounts:
             if not account.service_point_number:
                 continue
@@ -222,6 +226,140 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
             async_add_external_statistics(self.hass, usage_metadata, usage_statistics)
 
+            # Extrapolate estimated stats for the lag gap (typically ~48h).
+            monthly = monthly_by_account.get(account.number)
+            if (
+                monthly is not None
+                and cost_statistics
+                and usage_statistics
+            ):
+                await self._extrapolate_gap(
+                    account,
+                    monthly,
+                    _usage_sum,
+                    _cost_sum,
+                    usage_statistic_id,
+                    cost_statistic_id,
+                )
+
             # Commit the account's cumulative sums only after a successful loop.
             self._cost_sum_by_account[account.number] = _cost_sum
             self._usage_sum_by_account[account.number] = _usage_sum
+
+    async def _extrapolate_gap(
+        self,
+        account,
+        monthly: southern_company_api.account.MonthlyUsage,
+        last_usage_sum: float,
+        last_cost_sum: float,
+        usage_statistic_id: str,
+        cost_statistic_id: str,
+    ) -> None:
+        """Insert estimated statistics for the lag between last hourly data and now.
+
+        Southern Company hourly data lags ~48 hours. To keep the Energy Dashboard
+        from showing blank for recent days, we spread the difference between the
+        monthly total and the last known hourly sum evenly across the gap hours.
+
+        On the next coordinator cycle, when real hourly data arrives for those
+        hours, it will overwrite these estimates.
+        """
+        now = datetime.datetime.now(datetime.timezone.utc)
+        last_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(
+            hours=1
+        )
+
+        # Find the latest actual statistic timestamp.
+        last_stats = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, usage_statistic_id, True, set()
+        )
+        if not last_stats:
+            return
+        last_row = last_stats[usage_statistic_id][0]
+        raw_start = last_row["start"]
+        last_actual_ts = (
+            raw_start.timestamp()
+            if isinstance(raw_start, datetime.datetime)
+            else float(raw_start)
+        )
+        last_actual = datetime.datetime.fromtimestamp(
+            last_actual_ts, tz=datetime.timezone.utc
+        )
+
+        # Compute the gap in full hours.
+        gap_hours = int((last_hour - last_actual).total_seconds() / 3600)
+        if gap_hours <= 0:
+            return
+
+        # Get monthly totals.
+        monthly_usage = (
+            monthly.total_kwh_used
+            if isinstance(monthly.total_kwh_used, (int, float))
+            else 0.0
+        )
+        monthly_cost = (
+            monthly.dollars_to_date
+            if isinstance(monthly.dollars_to_date, (int, float))
+            else 0.0
+        )
+
+        usage_gap = max(monthly_usage - last_usage_sum, 0.0)
+        cost_gap = max(monthly_cost - last_cost_sum, 0.0)
+
+        est_usage_per_hour = usage_gap / gap_hours if gap_hours else 0.0
+        est_cost_per_hour = cost_gap / gap_hours if gap_hours else 0.0
+
+        est_usage_stats: list[StatisticData] = []
+        est_cost_stats: list[StatisticData] = []
+        run_usage_sum = last_usage_sum
+        run_cost_sum = last_cost_sum
+
+        for i in range(1, gap_hours + 1):
+            ts = last_actual + timedelta(hours=i)
+            ts = ts.replace(minute=0, second=0, microsecond=0)
+            run_usage_sum += est_usage_per_hour
+            run_cost_sum += est_cost_per_hour
+            est_usage_stats.append(
+                StatisticData(start=ts, state=est_usage_per_hour, sum=run_usage_sum)
+            )
+            est_cost_stats.append(
+                StatisticData(start=ts, state=est_cost_per_hour, sum=run_cost_sum)
+            )
+
+        if est_usage_stats:
+            _LOGGER.debug(
+                "Extrapolating %d estimated hours for account %s "
+                "(%.2f kWh/hr, $%.2f/hr)",
+                gap_hours,
+                account.number,
+                est_usage_per_hour,
+                est_cost_per_hour,
+            )
+            async_add_external_statistics(
+                self.hass,
+                StatisticMetaData(
+                    has_mean=False,
+                    has_sum=True,
+                    mean_type=StatisticMeanType.NONE,
+                    name=f"Southern Company {account.name} cost (estimated)",
+                    source=DOMAIN,
+                    statistic_id=cost_statistic_id,
+                    unit_of_measurement=None,
+                    unit_class=None,
+                ),
+                est_cost_stats,
+            )
+            async_add_external_statistics(
+                self.hass,
+                StatisticMetaData(
+                    has_mean=False,
+                    has_sum=True,
+                    mean_type=StatisticMeanType.NONE,
+                    name=f"Southern Company {account.name} usage (estimated)",
+                    source=DOMAIN,
+                    statistic_id=usage_statistic_id,
+                    unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                    unit_class="energy",
+                ),
+                est_usage_stats,
+            )
