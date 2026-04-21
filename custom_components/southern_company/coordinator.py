@@ -225,8 +225,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             else:
                 usage_last = last_usage_stats[usage_statistic_id][0]
                 cost_last = last_cost_stats[cost_statistic_id][0]
-                last_usage_sum = usage_last["sum"] or 0.0
-                last_cost_sum = cost_last["sum"] or 0.0
+                last_usage_sum = usage_last.get("sum") or 0.0
+                last_cost_sum = cost_last.get("sum") or 0.0
 
                 raw_start = usage_last["start"]
                 last_stats_time = (
@@ -453,7 +453,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         )
         if not last_stats or statistic_id not in last_stats:
             return 0.0
-        return last_stats[statistic_id][0]["sum"] or 0.0
+        return last_stats[statistic_id][0].get("sum") or 0.0
 
     async def _extrapolate_gap(
         self,
