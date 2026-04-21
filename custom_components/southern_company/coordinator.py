@@ -225,77 +225,26 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             else:
                 usage_last = last_usage_stats[usage_statistic_id][0]
                 cost_last = last_cost_stats[cost_statistic_id][0]
-                last_usage_sum = usage_last.get("sum") or 0.0
-                last_cost_sum = cost_last.get("sum") or 0.0
+                last_usage_sum = usage_last.get("sum", 0.0) or 0.0
+                last_cost_sum = cost_last.get("sum", 0.0) or 0.0
 
-                raw_start = usage_last["start"]
-                last_stats_time = (
-                    raw_start.timestamp()
-                    if isinstance(raw_start, datetime.datetime)
-                    else float(raw_start)
-                )
+                raw_start = usage_last.get("start")
+                if raw_start:
+                    last_stats_time = (
+                        raw_start.timestamp()
+                        if isinstance(raw_start, datetime.datetime)
+                        else float(raw_start)
+                    )
+                else:
+                    last_stats_time = None
 
                 hourly_data = await account.get_hourly_data(
                     datetime.datetime.now(datetime.timezone.utc) - timedelta(days=31),
                     datetime.datetime.now(datetime.timezone.utc),
                     await self._southern_company_connection.jwt,
                 )
-
-                # Resync check: if the seeded cumulative sums are wildly
-                # off from what the monthly total says, recompute from
-                # the start of the current billing month.
-                monthly = monthly_by_account.get(account.number)
-                if monthly is not None:
-                    total_api_kwh = sum(
-                        d.usage
-                        for d in hourly_data
-                        if isinstance(d.usage, (int, float))
-                    )
-                    total_api_cost = sum(
-                        d.cost for d in hourly_data if isinstance(d.cost, (int, float))
-                    )
-                    usage_drift_pct = (
-                        abs(last_usage_sum - total_api_kwh) / max(total_api_kwh, 1.0)
-                        if total_api_kwh > 0
-                        else 0.0
-                    )
-                    cost_drift_pct = (
-                        abs(last_cost_sum - total_api_cost) / max(total_api_cost, 1.0)
-                        if total_api_cost > 0
-                        else 0.0
-                    )
-                    if usage_drift_pct > 0.05 or cost_drift_pct > 0.05:
-                        _LOGGER.warning(
-                            "Cumulative sum drift detected for %s "
-                            "(usage drift %.1f%%, cost drift %.1f%%). "
-                            "Recomputing from month start.",
-                            account.number,
-                            usage_drift_pct * 100,
-                            cost_drift_pct * 100,
-                        )
-                        now = datetime.datetime.now(datetime.timezone.utc)
-                        month_start = now.replace(
-                            day=1, hour=0, minute=0, second=0, microsecond=0
-                        )
-                        try:
-                            hourly_data = await account.get_hourly_data(
-                                month_start,
-                                now,
-                                await self._southern_company_connection.jwt,
-                            )
-                        except Exception:
-                            _LOGGER.warning(
-                                "Failed to re-fetch from month start; using 31-day data"
-                            )
-                        _usage_sum = 0.0
-                        _cost_sum = 0.0
-                        last_stats_time = None
-                    else:
-                        _usage_sum = last_usage_sum
-                        _cost_sum = last_cost_sum
-                else:
-                    _usage_sum = last_usage_sum
-                    _cost_sum = last_cost_sum
+                _usage_sum = last_usage_sum
+                _cost_sum = last_cost_sum
 
             # Per-tariff running sums, seeded lazily from the most recent row.
             tariff_cost_sums: dict[str, float] = {}
@@ -479,10 +428,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         last_stats = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics, self.hass, 1, usage_statistic_id, True, set()
         )
-        if not last_stats:
+        if not last_stats or usage_statistic_id not in last_stats:
             return
         last_row = last_stats[usage_statistic_id][0]
-        raw_start = last_row["start"]
+        raw_start = last_row.get("start")
+        if raw_start is None:
+            return
         last_actual_ts = (
             raw_start.timestamp()
             if isinstance(raw_start, datetime.datetime)
@@ -494,7 +445,14 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
         # Compute the gap in full hours.
         gap_hours = int((last_hour - last_actual).total_seconds() / 3600)
-        if gap_hours <= 0:
+        # Cap gap to 72 hours to avoid massive extrapolation if the
+        # clock jumps or the DB is stale.
+        if gap_hours <= 0 or gap_hours > 72:
+            _LOGGER.debug(
+                "Gap extrapolation skipped for %s (%d hours)",
+                account.number,
+                gap_hours,
+            )
             return
 
         # Get monthly totals.
@@ -550,13 +508,15 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             )
 
         if est_usage_stats:
-            _LOGGER.debug(
+            _LOGGER.info(
                 "Extrapolating %d estimated hours for account %s "
-                "(%.2f kWh/hr, $%.2f/hr)",
+                "(%.2f kWh/hr, $%.2f/hr, usage_gap=%.2f, cost_gap=%.2f)",
                 gap_hours,
                 account.number,
                 est_usage_per_hour,
                 est_cost_per_hour,
+                usage_gap,
+                cost_gap,
             )
             async_add_external_statistics(
                 self.hass,
