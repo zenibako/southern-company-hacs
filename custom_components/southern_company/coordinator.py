@@ -14,7 +14,6 @@ from homeassistant.components.recorder.statistics import (
     StatisticMeanType,
     async_add_external_statistics,
     get_last_statistics,
-    statistics_during_period,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
@@ -180,7 +179,16 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         self,
         monthly_by_account: dict[str, southern_company_api.account.MonthlyUsage],
     ) -> None:
-        """Insert Southern Company statistics."""
+        """Insert Southern Company statistics.
+
+        Strategy:
+        - On first run: backfill 365 days of data.
+        - On incremental runs: fetch 31 days, seed cumulative sums from
+          the last DB row (via ``get_last_statistics``), then insert new
+          rows whose timestamps exceed that last row.
+        - If seeding drifts more than 5% from the monthly total, fall back
+          to re-computing from month start to eliminate cumulative errors.
+        """
         if await self._southern_company_connection.jwt is None:
             raise UpdateFailed("Jwt is None")
         tariffs = self._get_tariffs()
@@ -195,73 +203,99 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             cost_statistic_id = f"{DOMAIN}:energy_cost_{account.number}"
             usage_statistic_id = f"{DOMAIN}:energy_usage_{account.number}"
 
-            last_stats = await get_instance(self.hass).async_add_executor_job(
+            last_usage_stats = await get_instance(self.hass).async_add_executor_job(
                 get_last_statistics, self.hass, 1, usage_statistic_id, True, set()
             )
-            if not last_stats:
-                # First time we insert 1 year of data (if available)
+            last_cost_stats = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, cost_statistic_id, True, set()
+            )
+            first_run = not last_usage_stats or not last_cost_stats
+            if first_run:
                 _LOGGER.info(
                     "Updating statistic for the first time, this may take a while"
                 )
                 hourly_data = await account.get_hourly_data(
-                    datetime.datetime.now() - timedelta(days=365),
-                    datetime.datetime.now(),
+                    datetime.datetime.now(datetime.timezone.utc) - timedelta(days=365),
+                    datetime.datetime.now(datetime.timezone.utc),
                     await self._southern_company_connection.jwt,
                 )
-                _cost_sum = 0.0
                 _usage_sum = 0.0
+                _cost_sum = 0.0
                 last_stats_time = None
             else:
-                # Fetch the last 31 days and overwrite any revisions.
+                usage_last = last_usage_stats[usage_statistic_id][0]
+                cost_last = last_cost_stats[cost_statistic_id][0]
+                last_usage_sum = usage_last["sum"] or 0.0
+                last_cost_sum = cost_last["sum"] or 0.0
+
+                raw_start = usage_last["start"]
+                last_stats_time = (
+                    raw_start.timestamp()
+                    if isinstance(raw_start, datetime.datetime)
+                    else float(raw_start)
+                )
+
                 hourly_data = await account.get_hourly_data(
-                    datetime.datetime.now() - timedelta(days=31),
-                    datetime.datetime.now(),
+                    datetime.datetime.now(datetime.timezone.utc) - timedelta(days=31),
+                    datetime.datetime.now(datetime.timezone.utc),
                     await self._southern_company_connection.jwt,
                 )
 
-                from_time = hourly_data[0].time
-                start = from_time - timedelta(hours=1)
-                cost_stat = await get_instance(self.hass).async_add_executor_job(
-                    statistics_during_period,
-                    self.hass,
-                    start,
-                    None,
-                    [cost_statistic_id],
-                    "hour",
-                    None,
-                    {"sum"},
-                )
-                if cost_statistic_id not in cost_stat:
-                    _LOGGER.warning(
-                        "Missing cost statistic window; re-backfilling one year"
+                # Resync check: if the seeded cumulative sums are wildly
+                # off from what the monthly total says, recompute from
+                # the start of the current billing month.
+                monthly = monthly_by_account.get(account.number)
+                if monthly is not None:
+                    total_api_kwh = sum(
+                        d.usage
+                        for d in hourly_data
+                        if isinstance(d.usage, (int, float))
                     )
-                    hourly_data = await account.get_hourly_data(
-                        datetime.datetime.now() - timedelta(days=365),
-                        datetime.datetime.now(),
-                        await self._southern_company_connection.jwt,
+                    total_api_cost = sum(
+                        d.cost for d in hourly_data if isinstance(d.cost, (int, float))
                     )
-                    _cost_sum = 0.0
-                    _usage_sum = 0.0
-                    last_stats_time = None
+                    usage_drift_pct = (
+                        abs(last_usage_sum - total_api_kwh) / max(total_api_kwh, 1.0)
+                        if total_api_kwh > 0
+                        else 0.0
+                    )
+                    cost_drift_pct = (
+                        abs(last_cost_sum - total_api_cost) / max(total_api_cost, 1.0)
+                        if total_api_cost > 0
+                        else 0.0
+                    )
+                    if usage_drift_pct > 0.05 or cost_drift_pct > 0.05:
+                        _LOGGER.warning(
+                            "Cumulative sum drift detected for %s "
+                            "(usage drift %.1f%%, cost drift %.1f%%). "
+                            "Recomputing from month start.",
+                            account.number,
+                            usage_drift_pct * 100,
+                            cost_drift_pct * 100,
+                        )
+                        now = datetime.datetime.now(datetime.timezone.utc)
+                        month_start = now.replace(
+                            day=1, hour=0, minute=0, second=0, microsecond=0
+                        )
+                        try:
+                            hourly_data = await account.get_hourly_data(
+                                month_start,
+                                now,
+                                await self._southern_company_connection.jwt,
+                            )
+                        except Exception:
+                            _LOGGER.warning(
+                                "Failed to re-fetch from month start; using 31-day data"
+                            )
+                        _usage_sum = 0.0
+                        _cost_sum = 0.0
+                        last_stats_time = None
+                    else:
+                        _usage_sum = last_usage_sum
+                        _cost_sum = last_cost_sum
                 else:
-                    _cost_sum = cost_stat[cost_statistic_id][0]["sum"] or 0.0
-                    _raw_start = cost_stat[cost_statistic_id][0]["start"]
-                    last_stats_time = (
-                        _raw_start.timestamp()
-                        if isinstance(_raw_start, datetime.datetime)
-                        else float(_raw_start)
-                    )
-                    usage_stat = await get_instance(self.hass).async_add_executor_job(
-                        statistics_during_period,
-                        self.hass,
-                        start,
-                        None,
-                        [usage_statistic_id],
-                        "hour",
-                        None,
-                        {"sum"},
-                    )
-                    _usage_sum = usage_stat[usage_statistic_id][0]["sum"] or 0.0
+                    _usage_sum = last_usage_sum
+                    _cost_sum = last_cost_sum
 
             # Per-tariff running sums, seeded lazily from the most recent row.
             tariff_cost_sums: dict[str, float] = {}
@@ -414,25 +448,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         """
         if last_stats_time is None:
             return 0.0
-        ts = (
-            last_stats_time
-            if isinstance(last_stats_time, float)
-            else last_stats_time.timestamp()
+        last_stats = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, statistic_id, True, set()
         )
-        start = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
-        stat = await get_instance(self.hass).async_add_executor_job(
-            statistics_during_period,
-            self.hass,
-            start - timedelta(hours=1),
-            start + timedelta(hours=1),
-            [statistic_id],
-            "hour",
-            None,
-            {"sum"},
-        )
-        if statistic_id not in stat or not stat[statistic_id]:
+        if not last_stats or statistic_id not in last_stats:
             return 0.0
-        return stat[statistic_id][0]["sum"] or 0.0
+        return last_stats[statistic_id][0]["sum"] or 0.0
 
     async def _extrapolate_gap(
         self,
