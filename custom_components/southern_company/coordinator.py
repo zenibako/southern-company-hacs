@@ -219,6 +219,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     datetime.datetime.now(datetime.timezone.utc),
                     await self._southern_company_connection.jwt,
                 )
+                hourly_data = [d for d in hourly_data if d.time is not None]
+                hourly_data.sort(key=lambda d: d.time)
                 _usage_sum = 0.0
                 _cost_sum = 0.0
                 last_stats_time = None
@@ -243,6 +245,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     datetime.datetime.now(datetime.timezone.utc),
                     await self._southern_company_connection.jwt,
                 )
+                hourly_data = [d for d in hourly_data if d.time is not None]
+                hourly_data.sort(key=lambda d: d.time)
                 _usage_sum = last_usage_sum
                 _cost_sum = last_cost_sum
 
