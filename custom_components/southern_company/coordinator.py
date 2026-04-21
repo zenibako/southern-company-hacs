@@ -502,6 +502,23 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         for i in range(1, gap_hours + 1):
             ts = last_actual + timedelta(hours=i)
             ts = ts.replace(minute=0, second=0, microsecond=0)
+
+            # Cap extrapolation to not exceed monthly total
+            if run_usage_sum >= monthly_usage:
+                # distribute remaining cost gap across remaining hours
+                est_usage_per_hour = 0.0
+            else:
+                # we are still below the monthly total, add estimated usage
+                # but cap the current step so we don't overshoot the total
+                est_usage_per_hour = min(
+                    est_usage_per_hour, monthly_usage - run_usage_sum
+                )
+
+            if run_cost_sum >= monthly_cost:
+                est_cost_per_hour = 0.0
+            else:
+                est_cost_per_hour = min(est_cost_per_hour, monthly_cost - run_cost_sum)
+
             run_usage_sum += est_usage_per_hour
             run_cost_sum += est_cost_per_hour
             est_usage_stats.append(
