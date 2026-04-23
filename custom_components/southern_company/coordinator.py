@@ -200,8 +200,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             if not account.service_point_number:
                 continue
             _LOGGER.debug("Updating Statistics for %s", account.number)
-            cost_statistic_id = f"{DOMAIN}:energy_cost_{account.number}"
-            usage_statistic_id = f"{DOMAIN}:energy_usage_{account.number}"
+            cost_statistic_id = f"{DOMAIN}:energy_cost_{account.number}_v2"
+            usage_statistic_id = f"{DOMAIN}:energy_usage_{account.number}_v2"
 
             last_usage_stats = await get_instance(self.hass).async_add_executor_job(
                 get_last_statistics, self.hass, 1, usage_statistic_id, True, set()
@@ -221,6 +221,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 )
                 hourly_data = [d for d in hourly_data if d.time is not None]
                 hourly_data.sort(key=lambda d: d.time)
+                _LOGGER.info(
+                    "First-run sort check: first=%s last=%s count=%d",
+                    hourly_data[0].time if hourly_data else None,
+                    hourly_data[-1].time if hourly_data else None,
+                    len(hourly_data),
+                )
                 _usage_sum = 0.0
                 _cost_sum = 0.0
                 last_stats_time = None
@@ -247,6 +253,13 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 )
                 hourly_data = [d for d in hourly_data if d.time is not None]
                 hourly_data.sort(key=lambda d: d.time)
+                _LOGGER.info(
+                    "Incremental sort check: first=%s last=%s count=%d seed=%.2f",
+                    hourly_data[0].time if hourly_data else None,
+                    hourly_data[-1].time if hourly_data else None,
+                    len(hourly_data),
+                    last_usage_sum,
+                )
                 _usage_sum = last_usage_sum
                 _cost_sum = last_cost_sum
 
@@ -264,6 +277,17 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     data.usage, (int, float)
                 ):
                     continue
+                # Reject impossibly large single-hour spikes (corrupt data),
+                # but preserve legitimate small negative values (e.g. solar).
+                if abs(data.usage) > 200 or abs(data.cost) > 200:
+                    _LOGGER.warning(
+                        "Skipping spike for %s at %s: usage=%.2f cost=%.2f",
+                        account.number,
+                        data.time,
+                        data.usage,
+                        data.cost,
+                    )
+                    continue
                 from_time = data.time
                 if from_time is None or (
                     last_stats_time is not None
@@ -279,6 +303,13 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 )
                 usage_statistics.append(
                     StatisticData(start=from_time, state=data.usage, sum=_usage_sum)
+                )
+                _LOGGER.info(
+                    "Inserted %s: %s usage=%.2f sum=%.2f",
+                    account.number,
+                    from_time.isoformat(),
+                    data.usage,
+                    _usage_sum,
                 )
 
                 if tariffs:
@@ -323,7 +354,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 has_mean=False,
                 has_sum=True,
                 mean_type=StatisticMeanType.NONE,
-                name=f"Southern Company {account.name} cost",
+                name=f"Southern Company {account.name} cost (v2)",
                 source=DOMAIN,
                 statistic_id=cost_statistic_id,
                 unit_of_measurement=None,
@@ -333,7 +364,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 has_mean=False,
                 has_sum=True,
                 mean_type=StatisticMeanType.NONE,
-                name=f"Southern Company {account.name} usage",
+                name=f"Southern Company {account.name} usage (v2)",
                 source=DOMAIN,
                 statistic_id=usage_statistic_id,
                 unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
@@ -375,16 +406,20 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 )
 
             # Extrapolate estimated stats for the lag gap (typically ~48h).
-            monthly = monthly_by_account.get(account.number)
-            if monthly is not None and cost_statistics and usage_statistics:
-                await self._extrapolate_gap(
-                    account,
-                    monthly,
-                    _usage_sum,
-                    _cost_sum,
-                    usage_statistic_id,
-                    cost_statistic_id,
-                )
+            # Disabled temporarily to isolate whether the hourly pipeline alone
+            # produces correct results.
+            # monthly = monthly_by_account.get(account.number)
+            # if monthly is not None and cost_statistics and usage_statistics:
+            #     last_actual = usage_statistics[-1].start
+            #     await self._extrapolate_gap(
+            #         account,
+            #         monthly,
+            #         _usage_sum,
+            #         _cost_sum,
+            #         usage_statistic_id,
+            #         cost_statistic_id,
+            #         last_actual,
+            #     )
 
             # Commit the account's cumulative sums only after a successful loop.
             self._cost_sum_by_account[account.number] = _cost_sum
@@ -416,6 +451,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         last_cost_sum: float,
         usage_statistic_id: str,
         cost_statistic_id: str,
+        last_actual: datetime.datetime,
     ) -> None:
         """Insert estimated statistics for the lag between last hourly data and now.
 
@@ -427,25 +463,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         """
         now = datetime.datetime.now(datetime.timezone.utc)
         last_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
-
-        # Find the latest actual statistic timestamp.
-        last_stats = await get_instance(self.hass).async_add_executor_job(
-            get_last_statistics, self.hass, 1, usage_statistic_id, True, set()
-        )
-        if not last_stats or usage_statistic_id not in last_stats:
-            return
-        last_row = last_stats[usage_statistic_id][0]
-        raw_start = last_row.get("start")
-        if raw_start is None:
-            return
-        last_actual_ts = (
-            raw_start.timestamp()
-            if isinstance(raw_start, datetime.datetime)
-            else float(raw_start)
-        )
-        last_actual = datetime.datetime.fromtimestamp(
-            last_actual_ts, tz=datetime.timezone.utc
-        )
+        last_actual = last_actual.replace(minute=0, second=0, microsecond=0)
 
         # Compute the gap in full hours.
         gap_hours = int((last_hour - last_actual).total_seconds() / 3600)
