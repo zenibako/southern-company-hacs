@@ -1,9 +1,12 @@
 """Coordinator to handle southern Company connections."""
 
+import asyncio
 import dataclasses
 import datetime
 from datetime import timedelta
+import json
 import logging
+import os
 
 import southern_company_api
 from southern_company_api.exceptions import SouthernCompanyException
@@ -23,6 +26,28 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import CONF_HOLIDAY_CALENDAR
 from .const import CONF_TARIFFS
 from .const import DOMAIN
+
+_SUM_CACHE_FILE = "southern_company_sums.json"
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _load_sum_cache_sync(hass: HomeAssistant) -> dict[str, dict[str, float]]:
+    path = hass.config.path(_SUM_CACHE_FILE)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_sum_cache_sync(hass: HomeAssistant, cache: dict[str, dict[str, float]]) -> None:
+    path = hass.config.path(_SUM_CACHE_FILE)
+    try:
+        with open(path, "w") as f:
+            json.dump(cache, f)
+    except Exception:
+        _LOGGER.warning("Failed to save sum cache to %s", path)
 
 
 async def _is_holiday(
@@ -130,6 +155,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         self._entry = entry
         self._usage_sum_by_account: dict[str, float] = {}
         self._cost_sum_by_account: dict[str, float] = {}
+        self._sum_cache: dict[str, dict[str, float]] = {}
 
     @property
     def api(self) -> southern_company_api.SouthernCompanyAPI:
@@ -138,6 +164,10 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict[str, AccountData]:
         """Update data via API."""
+        if not self._sum_cache:
+            self._sum_cache = await get_instance(self.hass).async_add_executor_job(
+                _load_sum_cache_sync, self.hass
+            )
         try:
             if await self._southern_company_connection.jwt is not None:
                 monthly_by_account: dict[
@@ -203,13 +233,61 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             cost_statistic_id = f"{DOMAIN}:energy_cost_{account.number}_v2"
             usage_statistic_id = f"{DOMAIN}:energy_usage_{account.number}_v2"
 
-            last_usage_stats = await get_instance(self.hass).async_add_executor_job(
-                get_last_statistics, self.hass, 1, usage_statistic_id, True, set()
+            # Robustly check whether this entity already has DB rows.
+            # During HA startup ``get_last_statistics`` can transiently return
+            # empty, which would cause a false first_run and overwrite all
+            # existing rows with sums computed from 0.  We retry a few times
+            # and also request the last 100 rows instead of 1 to improve
+            # the chance the query finds something.
+            last_usage_stats: dict | None = None
+            last_cost_stats: dict | None = None
+            for attempt in range(5):
+                if attempt > 0:
+                    await asyncio.sleep(0.5)
+                last_usage_stats = await get_instance(self.hass).async_add_executor_job(
+                    get_last_statistics, self.hass, 100, usage_statistic_id, True, set()
+                )
+                last_cost_stats = await get_instance(self.hass).async_add_executor_job(
+                    get_last_statistics, self.hass, 100, cost_statistic_id, True, set()
+                )
+                usage_has = (
+                    last_usage_stats
+                    and usage_statistic_id in last_usage_stats
+                    and len(last_usage_stats[usage_statistic_id]) > 0
+                )
+                cost_has = (
+                    last_cost_stats
+                    and cost_statistic_id in last_cost_stats
+                    and len(last_cost_stats[cost_statistic_id]) > 0
+                )
+                # If EITHER series already has rows, the entity exists.
+                if usage_has or cost_has:
+                    break
+
+            first_run = not (
+                last_usage_stats
+                and usage_statistic_id in last_usage_stats
+                and len(last_usage_stats[usage_statistic_id]) > 0
+                and last_cost_stats
+                and cost_statistic_id in last_cost_stats
+                and len(last_cost_stats[cost_statistic_id]) > 0
             )
-            last_cost_stats = await get_instance(self.hass).async_add_executor_job(
-                get_last_statistics, self.hass, 1, cost_statistic_id, True, set()
-            )
-            first_run = not last_usage_stats or not last_cost_stats
+            cached = self._sum_cache.get(account.number, {})
+            cached_usage_sum = cached.get("usage")
+            cached_cost_sum = cached.get("cost")
+
+            # Query the DB directly for the true historical max sum, since
+            # get_last_statistics only returns the latest rows which may be
+            # corrupt after a restart that re-seeded from 0.
+            max_db_usage_sum = 0.0
+            max_db_cost_sum = 0.0
+            try:
+                max_db_usage_sum, max_db_cost_sum = await get_instance(
+                    self.hass
+                ).async_add_executor_job(self._get_max_sums, usage_statistic_id, cost_statistic_id)
+            except Exception:
+                _LOGGER.debug("Could not query max sums from DB")
+
             if first_run:
                 _LOGGER.info(
                     "Updating statistic for the first time, this may take a while"
@@ -236,8 +314,73 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 last_usage_sum = usage_last.get("sum", 0.0) or 0.0
                 last_cost_sum = cost_last.get("sum", 0.0) or 0.0
 
-                raw_start = usage_last.get("start")
-                if raw_start:
+                # Detect restart corruption: after HA restart, the
+                # statistics are sometimes re-seeded from 0, so the
+                # latest sum can be far below the historical maximum.
+                # Find the true historical peak across all sources.
+                best_seed_usage = last_usage_sum
+                best_seed_cost = last_cost_sum
+
+                # Source 1: max from get_last_statistics rows.
+                all_usage_rows = last_usage_stats.get(usage_statistic_id, [])
+                stats_max_usage = max(
+                    (r.get("sum") or 0.0) for r in all_usage_rows
+                ) if all_usage_rows else last_usage_sum
+                all_cost_rows = last_cost_stats.get(cost_statistic_id, [])
+                stats_max_cost = max(
+                    (r.get("sum") or 0.0) for r in all_cost_rows
+                ) if all_cost_rows else last_cost_sum
+                best_seed_usage = max(best_seed_usage, stats_max_usage)
+                best_seed_cost = max(best_seed_cost, stats_max_cost)
+
+                # Source 2: direct DB query for the true max.
+                best_seed_usage = max(best_seed_usage, max_db_usage_sum)
+                best_seed_cost = max(best_seed_cost, max_db_cost_sum)
+
+                # Source 3: persistent cache.
+                if cached_usage_sum is not None and cached_usage_sum > 0:
+                    best_seed_usage = max(best_seed_usage, cached_usage_sum)
+                if cached_cost_sum is not None and cached_cost_sum > 0:
+                    best_seed_cost = max(best_seed_cost, cached_cost_sum)
+
+                # If the latest sum is far below the best seed, the
+                # data was re-seeded from 0 after a restart.
+                if best_seed_usage > 0 and last_usage_sum < best_seed_usage * 0.5:
+                    _LOGGER.warning(
+                        "DB sum looks corrupt for %s "
+                        "(latest=%.2f, best_seed=%.2f, "
+                        "stats_max=%.2f, db_max=%.2f, cache=%.2f); "
+                        "falling back to best_seed",
+                        account.number,
+                        last_usage_sum,
+                        best_seed_usage,
+                        stats_max_usage,
+                        max_db_usage_sum,
+                        cached_usage_sum or 0.0,
+                    )
+                    last_usage_sum = best_seed_usage
+                    last_cost_sum = best_seed_cost
+
+                # Find the last row with actual (non-zero) data rather than
+                # using the absolute latest row, which may be an extrapolation
+                # placeholder set to a future time.  Using the placeholder's
+                # timestamp would cause all real data to be filtered out.
+                all_usage_rows_for_time = last_usage_stats.get(usage_statistic_id, [])
+                last_real_row = None
+                for row in all_usage_rows_for_time:
+                    state_val = row.get("state", 0.0) or 0.0
+                    if state_val > 0:
+                        raw_start = row.get("start")
+                        if raw_start:
+                            last_real_row = row
+                if last_real_row is not None:
+                    raw_start = last_real_row.get("start")
+                    last_stats_time = (
+                        raw_start.timestamp()
+                        if isinstance(raw_start, datetime.datetime)
+                        else float(raw_start)
+                    )
+                elif (raw_start := usage_last.get("start")):
                     last_stats_time = (
                         raw_start.timestamp()
                         if isinstance(raw_start, datetime.datetime)
@@ -254,11 +397,12 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 hourly_data = [d for d in hourly_data if d.time is not None]
                 hourly_data.sort(key=lambda d: d.time)
                 _LOGGER.info(
-                    "Incremental sort check: first=%s last=%s count=%d seed=%.2f",
+                    "Incremental sort check: first=%s last=%s count=%d seed=%.2f last_ts=%s",
                     hourly_data[0].time if hourly_data else None,
                     hourly_data[-1].time if hourly_data else None,
                     len(hourly_data),
                     last_usage_sum,
+                    datetime.datetime.fromtimestamp(last_stats_time, tz=datetime.timezone.utc).isoformat() if last_stats_time else None,
                 )
                 _usage_sum = last_usage_sum
                 _cost_sum = last_cost_sum
@@ -406,24 +550,83 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 )
 
             # Extrapolate estimated stats for the lag gap (typically ~48h).
-            # Disabled temporarily to isolate whether the hourly pipeline alone
-            # produces correct results.
-            # monthly = monthly_by_account.get(account.number)
-            # if monthly is not None and cost_statistics and usage_statistics:
-            #     last_actual = usage_statistics[-1].start
-            #     await self._extrapolate_gap(
-            #         account,
-            #         monthly,
-            #         _usage_sum,
-            #         _cost_sum,
-            #         usage_statistic_id,
-            #         cost_statistic_id,
-            #         last_actual,
-            #     )
+            monthly = monthly_by_account.get(account.number)
+            if monthly is not None and cost_statistics and usage_statistics:
+                last_entry = usage_statistics[-1]
+                last_actual = (
+                    last_entry["start"]
+                    if isinstance(last_entry, dict)
+                    else last_entry.start
+                )
+                await self._extrapolate_gap(
+                    account,
+                    monthly,
+                    _usage_sum,
+                    _cost_sum,
+                    usage_statistic_id,
+                    cost_statistic_id,
+                    last_actual,
+                )
 
             # Commit the account's cumulative sums only after a successful loop.
             self._cost_sum_by_account[account.number] = _cost_sum
             self._usage_sum_by_account[account.number] = _usage_sum
+            # Only update cache if new sum makes sense (monotonically increasing).
+            old_cache = self._sum_cache.get(account.number, {})
+            old_usage = old_cache.get("usage", 0.0)
+            old_cost = old_cache.get("cost", 0.0)
+            if _usage_sum >= old_usage * 0.9 or old_usage == 0:
+                self._sum_cache[account.number] = {
+                    "usage": _usage_sum,
+                    "cost": _cost_sum,
+                }
+                await get_instance(self.hass).async_add_executor_job(
+                    _save_sum_cache_sync, self.hass, self._sum_cache
+                )
+            else:
+                _LOGGER.warning(
+                    "Skipping cache update for %s: new sum %.2f < cached %.2f "
+                    "(possible corrupt run)",
+                    account.number,
+                    _usage_sum,
+                    old_usage,
+                )
+
+    def _get_max_sums(self, usage_statistic_id: str, cost_statistic_id: str) -> tuple[float, float]:
+        """Query the recorder DB directly for the maximum cumulative sum.
+
+        This bypasses the in-memory statistics cache to find the true
+        historical peak, needed to detect restart-seeded-from-zero corruption.
+        """
+        import sqlite3
+
+        db_path = self.hass.config.path("home-assistant_v2.db")
+        max_usage = 0.0
+        max_cost = 0.0
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            for stat_id, label in [
+                (usage_statistic_id, "usage"),
+                (cost_statistic_id, "cost"),
+            ]:
+                c.execute(
+                    "SELECT s.sum FROM statistics s "
+                    "JOIN statistics_meta m ON s.metadata_id = m.id "
+                    "WHERE m.statistic_id = ? AND s.sum IS NOT NULL "
+                    "ORDER BY s.sum DESC LIMIT 1",
+                    (stat_id,),
+                )
+                row = c.fetchone()
+                val = row[0] if row else 0.0
+                if label == "usage":
+                    max_usage = max(0.0, val)
+                else:
+                    max_cost = max(0.0, val)
+            conn.close()
+        except Exception:
+            pass
+        return max_usage, max_cost
 
     async def _seed_tariff_sum(
         self, statistic_id: str, last_stats_time: float | None
