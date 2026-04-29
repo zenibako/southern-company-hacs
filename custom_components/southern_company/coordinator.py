@@ -380,14 +380,24 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                         if isinstance(raw_start, datetime.datetime)
                         else float(raw_start)
                     )
-                elif (raw_start := usage_last.get("start")):
-                    last_stats_time = (
-                        raw_start.timestamp()
-                        if isinstance(raw_start, datetime.datetime)
-                        else float(raw_start)
-                    )
                 else:
-                    last_stats_time = None
+                    # get_last_statistics returned only state=0 placeholder
+                    # rows.  Query the DB directly for the last real data point.
+                    last_stats_time = await get_instance(
+                        self.hass
+                    ).async_add_executor_job(
+                        self._get_last_real_timestamp, usage_statistic_id
+                    )
+                    _LOGGER.info(
+                        "No state>0 rows in get_last_statistics for %s; "
+                        "DB fallback last_stats_time=%s",
+                        account.number,
+                        datetime.datetime.fromtimestamp(
+                            last_stats_time, tz=datetime.timezone.utc
+                        ).isoformat()
+                        if last_stats_time
+                        else None,
+                    )
 
                 hourly_data = await account.get_hourly_data(
                     datetime.datetime.now(datetime.timezone.utc) - timedelta(days=31),
@@ -551,22 +561,35 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
             # Extrapolate estimated stats for the lag gap (typically ~48h).
             monthly = monthly_by_account.get(account.number)
-            if monthly is not None and cost_statistics and usage_statistics:
-                last_entry = usage_statistics[-1]
-                last_actual = (
-                    last_entry["start"]
-                    if isinstance(last_entry, dict)
-                    else last_entry.start
-                )
-                await self._extrapolate_gap(
-                    account,
-                    monthly,
-                    _usage_sum,
-                    _cost_sum,
-                    usage_statistic_id,
-                    cost_statistic_id,
-                    last_actual,
-                )
+            if monthly is not None:
+                # Determine the timestamp of the last actual data point.
+                # Use the newly inserted statistics if available, otherwise
+                # fall back to the DB's last real-data row.
+                if usage_statistics:
+                    last_entry = usage_statistics[-1]
+                    last_actual = (
+                        last_entry["start"]
+                        if isinstance(last_entry, dict)
+                        else last_entry.start
+                    )
+                elif last_stats_time is not None:
+                    last_actual = datetime.datetime.fromtimestamp(
+                        last_stats_time, tz=datetime.timezone.utc
+                    )
+                else:
+                    last_actual = None
+
+                if last_actual is not None:
+                    await self._extrapolate_gap(
+                        account,
+                        monthly,
+                        _usage_sum,
+                        _cost_sum,
+                        usage_statistic_id,
+                        cost_statistic_id,
+                        last_actual,
+                        hourly_data,
+                    )
 
             # Commit the account's cumulative sums only after a successful loop.
             self._cost_sum_by_account[account.number] = _cost_sum
@@ -628,6 +651,77 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             pass
         return max_usage, max_cost
 
+    def _get_last_real_timestamp(self, usage_statistic_id: str) -> float | None:
+        """Query the DB directly for the timestamp of the last row with state > 0.
+
+        This bypasses the in-memory statistics cache to find the true last
+        real data point, ignoring extrapolation placeholders with state=0.
+        """
+        import sqlite3
+
+        db_path = self.hass.config.path("home-assistant_v2.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute(
+                "SELECT s.start_ts FROM statistics s "
+                "JOIN statistics_meta m ON s.metadata_id = m.id "
+                "WHERE m.statistic_id = ? AND s.state > 0 "
+                "ORDER BY s.start_ts DESC LIMIT 1",
+                (usage_statistic_id,),
+            )
+            row = c.fetchone()
+            conn.close()
+            return float(row[0]) if row else None
+        except Exception:
+            return None
+
+    def _get_month_start_sums(
+        self, usage_statistic_id: str, cost_statistic_id: str
+    ) -> tuple[float, float]:
+        """Find the cumulative sums at the start of the current billing month.
+
+        Southern Company billing months typically start on the 1st.
+        This queries the DB for the first statistics row in the current
+        month and returns its sum values, which represent where the
+        cumulative counter was at the start of the month.
+        """
+        import sqlite3
+        import datetime
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # Southern Company billing cycles vary, but we approximate with
+        # the calendar month.  Find the first row for this month.
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_start_ts = month_start.timestamp()
+
+        db_path = self.hass.config.path("home-assistant_v2.db")
+        usage_sum = 0.0
+        cost_sum = 0.0
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            for stat_id, label in [
+                (usage_statistic_id, "usage"),
+                (cost_statistic_id, "cost"),
+            ]:
+                c.execute(
+                    "SELECT s.sum FROM statistics s "
+                    "JOIN statistics_meta m ON s.metadata_id = m.id "
+                    "WHERE m.statistic_id = ? AND s.start_ts >= ? "
+                    "ORDER BY s.start_ts ASC LIMIT 1",
+                    (stat_id, month_start_ts),
+                )
+                row = c.fetchone()
+                if label == "usage":
+                    usage_sum = row[0] if row else 0.0
+                else:
+                    cost_sum = row[0] if row else 0.0
+            conn.close()
+        except Exception:
+            pass
+        return usage_sum, cost_sum
+
     async def _seed_tariff_sum(
         self, statistic_id: str, last_stats_time: float | None
     ) -> float:
@@ -655,6 +749,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         usage_statistic_id: str,
         cost_statistic_id: str,
         last_actual: datetime.datetime,
+        hourly_data: list | None = None,
     ) -> None:
         """Insert estimated statistics for the lag between last hourly data and now.
 
@@ -692,8 +787,76 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             else 0.0
         )
 
-        usage_gap = max(monthly_usage - last_usage_sum, 0.0)
-        cost_gap = max(monthly_cost - last_cost_sum, 0.0)
+        # The cumulative sum (last_usage_sum) spans the entire history,
+        # but monthly_usage/montly_cost are for the current billing month
+        # only.  To compute the gap correctly, we need the cumulative sum
+        # at the start of the current billing month so we can subtract
+        # it and compare apples-to-apples.
+        #
+        # Find the cumulative sum at the start of the billing period by
+        # looking at the statistics DB for the first row of this month.
+        month_start_usage_sum = 0.0
+        month_start_cost_sum = 0.0
+        try:
+            month_start_usage_sum, month_start_cost_sum = (
+                await get_instance(self.hass).async_add_executor_job(
+                    self._get_month_start_sums,
+                    usage_statistic_id,
+                    cost_statistic_id,
+                )
+            )
+        except Exception:
+            _LOGGER.debug("Could not query month-start sums from DB")
+
+        # usage_gap = monthly total - how much we've already recorded this month.
+        this_month_usage = last_usage_sum - month_start_usage_sum
+        this_month_cost = last_cost_sum - month_start_cost_sum
+        usage_gap = max(monthly_usage - this_month_usage, 0.0)
+        cost_gap = max(monthly_cost - this_month_cost, 0.0)
+
+        _LOGGER.info(
+            "Extrapolation inputs for %s: monthly_usage=%.2f monthly_cost=%.2f "
+            "month_start_usage_sum=%.2f month_start_cost_sum=%.2f "
+            "last_usage_sum=%.2f last_cost_sum=%.2f "
+            "this_month_usage=%.2f this_month_cost=%.2f "
+            "usage_gap=%.2f cost_gap=%.2f gap_hours=%d",
+            account.number,
+            monthly_usage,
+            monthly_cost,
+            month_start_usage_sum,
+            month_start_cost_sum,
+            last_usage_sum,
+            last_cost_sum,
+            this_month_usage,
+            this_month_cost,
+            usage_gap,
+            cost_gap,
+            gap_hours,
+        )
+
+        # If usage_gap is zero or near-zero (the monthly total has already
+        # been recorded), estimate from the average of recent hours instead.
+        if usage_gap < 0.1 and gap_hours > 0:
+            # Find the average usage per hour from recent real data.
+            # Use the last 24 hours of the hourly_data we just processed.
+            recent_data = [
+                d for d in hourly_data[-24:]
+                if isinstance(d.usage, (int, float)) and d.usage > 0
+            ] if hourly_data else []
+            if recent_data:
+                avg_usage = sum(d.usage for d in recent_data) / len(recent_data)
+                avg_cost = sum(
+                    d.cost for d in recent_data
+                    if isinstance(d.cost, (int, float))
+                ) / len(recent_data)
+                usage_gap = avg_usage * gap_hours
+                cost_gap = avg_cost * gap_hours
+                _LOGGER.info(
+                    "Monthly gap near-zero; falling back to recent "
+                    "average (%.2f kWh/hour) for %d hours",
+                    avg_usage,
+                    gap_hours,
+                )
 
         est_usage_per_hour = usage_gap / gap_hours if gap_hours else 0.0
         est_cost_per_hour = cost_gap / gap_hours if gap_hours else 0.0
@@ -707,21 +870,27 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             ts = last_actual + timedelta(hours=i)
             ts = ts.replace(minute=0, second=0, microsecond=0)
 
-            # Cap extrapolation to not exceed monthly total
-            if run_usage_sum >= monthly_usage:
-                # distribute remaining cost gap across remaining hours
-                est_usage_per_hour = 0.0
-            else:
-                # we are still below the monthly total, add estimated usage
-                # but cap the current step so we don't overshoot the total
-                est_usage_per_hour = min(
-                    est_usage_per_hour, monthly_usage - run_usage_sum
-                )
+            # Cap extrapolation to not exceed monthly total — but only
+            # when the running this-month portion hasn't already exceeded
+            # the (stale) monthly total from the API.
+            if month_start_usage_sum > 0 and monthly_usage > 0:
+                run_this_month_usage = run_usage_sum - month_start_usage_sum
+                run_this_month_cost = run_cost_sum - month_start_cost_sum
+                if run_this_month_usage < monthly_usage:
+                    est_usage_per_hour = min(
+                        est_usage_per_hour,
+                        monthly_usage - run_this_month_usage,
+                    )
+                else:
+                    # Already past the monthly total; the API data is stale.
+                    # Let the estimate continue at the calculated rate.
+                    pass
 
-            if run_cost_sum >= monthly_cost:
-                est_cost_per_hour = 0.0
-            else:
-                est_cost_per_hour = min(est_cost_per_hour, monthly_cost - run_cost_sum)
+                if run_this_month_cost < monthly_cost:
+                    est_cost_per_hour = min(
+                        est_cost_per_hour,
+                        monthly_cost - run_this_month_cost,
+                    )
 
             run_usage_sum += est_usage_per_hour
             run_cost_sum += est_cost_per_hour
