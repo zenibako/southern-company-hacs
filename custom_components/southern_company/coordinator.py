@@ -382,12 +382,29 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     )
                 else:
                     # get_last_statistics returned only state=0 placeholder
-                    # rows.  Query the DB directly for the last real data point.
-                    last_stats_time = await get_instance(
+                    # or estimated rows.  Query the DB directly for the last
+                    # real data point, and use its sum for last_usage_sum.
+                    last_real_db = await get_instance(
                         self.hass
                     ).async_add_executor_job(
-                        self._get_last_real_timestamp, usage_statistic_id
+                        self._get_last_real_row, usage_statistic_id
                     )
+                    if last_real_db is not None:
+                        last_stats_time = last_real_db[0]
+                        # Override last_usage_sum with the real data sum
+                        # since the estimated rows' sums are not accurate.
+                        real_usage_sum = last_real_db[2]
+                        if real_usage_sum > 0 and real_usage_sum < last_usage_sum:
+                            _LOGGER.info(
+                                "Overriding last_usage_sum %.2f with real "
+                                "data sum %.2f for %s (estimated rows inflated)",
+                                last_usage_sum,
+                                real_usage_sum,
+                                account.number,
+                            )
+                            last_usage_sum = real_usage_sum
+                    else:
+                        last_stats_time = None
                     _LOGGER.info(
                         "No state>0 rows in get_last_statistics for %s; "
                         "DB fallback last_stats_time=%s",
@@ -399,23 +416,92 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                         else None,
                     )
 
-                hourly_data = await account.get_hourly_data(
-                    datetime.datetime.now(datetime.timezone.utc) - timedelta(days=31),
-                    datetime.datetime.now(datetime.timezone.utc),
-                    await self._southern_company_connection.jwt,
-                )
-                hourly_data = [d for d in hourly_data if d.time is not None]
-                hourly_data.sort(key=lambda d: d.time)
-                _LOGGER.info(
-                    "Incremental sort check: first=%s last=%s count=%d seed=%.2f last_ts=%s",
-                    hourly_data[0].time if hourly_data else None,
-                    hourly_data[-1].time if hourly_data else None,
-                    len(hourly_data),
-                    last_usage_sum,
-                    datetime.datetime.fromtimestamp(last_stats_time, tz=datetime.timezone.utc).isoformat() if last_stats_time else None,
-                )
-                _usage_sum = last_usage_sum
-                _cost_sum = last_cost_sum
+            hourly_data = await account.get_hourly_data(
+                datetime.datetime.now(datetime.timezone.utc) - timedelta(days=31),
+                datetime.datetime.now(datetime.timezone.utc),
+                await self._southern_company_connection.jwt,
+            )
+            hourly_data = [d for d in hourly_data if d.time is not None]
+            hourly_data.sort(key=lambda d: d.time)
+
+            # Use the last API data timestamp to find the true cumulative
+            # sum for real data.  Estimated rows in the DB may have inflated
+            # sums, so we override last_stats_time with the latest API
+            # timestamp (which is guaranteed real data) and re-seed the
+            # cumulative sums from the DB at that point.
+            if hourly_data and last_stats_time is not None:
+                # Find the last API data point that we've already recorded.
+                # This is guaranteed to be real data (not estimated).
+                api_last_ts = None
+                for api_point in reversed(hourly_data):
+                    if not isinstance(api_point.usage, (int, float)):
+                        continue
+                    api_ts = api_point.time.replace(
+                        minute=0, second=0, microsecond=0
+                    ).timestamp()
+                    # Only consider API points that are at or before
+                    # last_stats_time (i.e., already processed).
+                    if api_ts <= last_stats_time:
+                        api_last_ts = api_ts
+                        break
+
+                if api_last_ts is not None and api_last_ts < last_stats_time:
+                    # The DB may have estimated rows after api_last_ts with
+                    # inflated sums.  Use the sum at api_last_ts as the seed.
+                    real_usage_sum = await get_instance(self.hass).async_add_executor_job(
+                        self._get_sum_at_timestamp,
+                        usage_statistic_id,
+                        api_last_ts,
+                    )
+                    if (
+                        real_usage_sum is not None
+                        and real_usage_sum > 0
+                        and real_usage_sum < last_usage_sum
+                    ):
+                        real_cost_sum = await get_instance(self.hass).async_add_executor_job(
+                            self._get_sum_at_timestamp,
+                            cost_statistic_id,
+                            api_last_ts,
+                        )
+                        _LOGGER.info(
+                            "Re-seeding sums from API-anchored DB row for %s: "
+                            "real_usage_sum=%.2f vs last_usage_sum=%.2f "
+                            "(api_last_ts=%s)",
+                            account.number,
+                            real_usage_sum,
+                            last_usage_sum,
+                            datetime.datetime.fromtimestamp(
+                                api_last_ts, tz=datetime.timezone.utc
+                            ).isoformat(),
+                        )
+                        last_usage_sum = real_usage_sum
+                        if real_cost_sum and real_cost_sum > 0:
+                            last_cost_sum = real_cost_sum
+
+                    # Use the API's last data timestamp as last_stats_time
+                    # so that data at or after this point gets reprocessed,
+                    # overwriting any stale estimated rows.
+                    _LOGGER.info(
+                        "Adjusting last_stats_time from %s to %s (API boundary)",
+                        datetime.datetime.fromtimestamp(
+                            last_stats_time, tz=datetime.timezone.utc
+                        ).isoformat(),
+                        datetime.datetime.fromtimestamp(
+                            api_last_ts, tz=datetime.timezone.utc
+                        ).isoformat(),
+                    )
+                    last_stats_time = api_last_ts
+
+            _LOGGER.info(
+                "Incremental sort check: first=%s last=%s count=%d seed=%.2f last_ts=%s",
+                hourly_data[0].time if hourly_data else None,
+                hourly_data[-1].time if hourly_data else None,
+                len(hourly_data),
+                last_usage_sum,
+                datetime.datetime.fromtimestamp(last_stats_time, tz=datetime.timezone.utc).isoformat() if last_stats_time else None,
+            )
+            _usage_sum = last_usage_sum
+            _cost_sum = last_cost_sum
 
             # Per-tariff running sums, seeded lazily from the most recent row.
             tariff_cost_sums: dict[str, float] = {}
@@ -657,6 +743,15 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         This bypasses the in-memory statistics cache to find the true last
         real data point, ignoring extrapolation placeholders with state=0.
         """
+        result = self._get_last_real_row(usage_statistic_id)
+        return result[0] if result else None
+
+    def _get_last_real_row(self, usage_statistic_id: str) -> tuple[float, float, float] | None:
+        """Query the DB directly for the last row with state > 0.
+
+        Returns (timestamp, state, sum) of the last real data point,
+        or None if no real data exists.
+        """
         import sqlite3
 
         db_path = self.hass.config.path("home-assistant_v2.db")
@@ -664,11 +759,37 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             conn = sqlite3.connect(db_path)
             c = conn.cursor()
             c.execute(
-                "SELECT s.start_ts FROM statistics s "
+                "SELECT s.start_ts, s.state, s.sum FROM statistics s "
                 "JOIN statistics_meta m ON s.metadata_id = m.id "
                 "WHERE m.statistic_id = ? AND s.state > 0 "
                 "ORDER BY s.start_ts DESC LIMIT 1",
                 (usage_statistic_id,),
+            )
+            row = c.fetchone()
+            conn.close()
+            if row:
+                return float(row[0]), float(row[1]), float(row[2])
+            return None
+        except Exception:
+            return None
+
+    def _get_sum_at_timestamp(
+        self, statistic_id: str, timestamp: float
+    ) -> float | None:
+        """Query the DB for the cumulative sum at or before a timestamp."""
+        import sqlite3
+
+        db_path = self.hass.config.path("home-assistant_v2.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute(
+                "SELECT s.sum FROM statistics s "
+                "JOIN statistics_meta m ON s.metadata_id = m.id "
+                "WHERE m.statistic_id = ? AND s.start_ts <= ? "
+                "AND s.sum IS NOT NULL "
+                "ORDER BY s.start_ts DESC LIMIT 1",
+                (statistic_id, timestamp),
             )
             row = c.fetchone()
             conn.close()
@@ -840,9 +961,18 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             # Find the average usage per hour from recent real data.
             # Use the last 24 hours of the hourly_data we just processed.
             recent_data = [
-                d for d in hourly_data[-24:]
+                d for d in hourly_data
                 if isinstance(d.usage, (int, float)) and d.usage > 0
-            ] if hourly_data else []
+            ][-48:] if hourly_data else []
+            _LOGGER.info(
+                "Monthly gap near-zero for %s: usage_gap=%.2f gap_hours=%d "
+                "hourly_data_len=%d recent_data_len=%d",
+                account.number,
+                usage_gap,
+                gap_hours,
+                len(hourly_data) if hourly_data else 0,
+                len(recent_data),
+            )
             if recent_data:
                 avg_usage = sum(d.usage for d in recent_data) / len(recent_data)
                 avg_cost = sum(
