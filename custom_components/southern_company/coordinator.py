@@ -443,73 +443,58 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             hourly_data = [d for d in hourly_data if d.time is not None]
             hourly_data.sort(key=lambda d: d.time)
 
-            # Use the last API data timestamp to find the true cumulative
-            # sum for real data.  Estimated rows in the DB may have inflated
-            # sums, so we override last_stats_time with the latest API
-            # timestamp (which is guaranteed real data) and re-seed the
-            # cumulative sums from the DB at that point.
+            # Re-seed cumulative sums from real API data to avoid the
+            # feedback loop where estimated rows inflate the seed, leading
+            # to exponentially growing sums on each coordinator run.
+            #
+            # Strategy: find the first API data point (earliest in the
+            # 31-day window) and query the DB for its cumulative sum,
+            # which is guaranteed to be from real data.  Then add all
+            # API usage/cost values to get the correct cumulative sum
+            # at the last API data timestamp.
             if hourly_data and last_stats_time is not None:
-                # Find the last API data point that we've already recorded.
-                # This is guaranteed to be real data (not estimated).
-                api_last_ts = None
-                for api_point in reversed(hourly_data):
-                    if not isinstance(api_point.usage, (int, float)):
-                        continue
-                    api_ts = api_point.time.replace(
-                        minute=0, second=0, microsecond=0
-                    ).timestamp()
-                    # Only consider API points that are at or before
-                    # last_stats_time (i.e., already processed).
-                    if api_ts <= last_stats_time:
-                        api_last_ts = api_ts
+                first_api_ts = None
+                for api_point in hourly_data:
+                    if isinstance(api_point.usage, (int, float)):
+                        first_api_ts = api_point.time.replace(
+                            minute=0, second=0, microsecond=0
+                        ).timestamp()
                         break
 
-                if api_last_ts is not None and api_last_ts < last_stats_time:
-                    # The DB may have estimated rows after api_last_ts with
-                    # inflated sums.  Use the sum at api_last_ts as the seed.
-                    real_usage_sum = await get_instance(self.hass).async_add_executor_job(
+                if first_api_ts is not None:
+                    anchor_usage = await get_instance(self.hass).async_add_executor_job(
                         self._get_sum_at_timestamp,
                         usage_statistic_id,
-                        api_last_ts,
+                        first_api_ts,
                     )
-                    if (
-                        real_usage_sum is not None
-                        and real_usage_sum > 0
-                        and real_usage_sum < last_usage_sum
-                    ):
-                        real_cost_sum = await get_instance(self.hass).async_add_executor_job(
-                            self._get_sum_at_timestamp,
-                            cost_statistic_id,
-                            api_last_ts,
-                        )
-                        _LOGGER.info(
-                            "Re-seeding sums from API-anchored DB row for %s: "
-                            "real_usage_sum=%.2f vs last_usage_sum=%.2f "
-                            "(api_last_ts=%s)",
-                            account.number,
-                            real_usage_sum,
-                            last_usage_sum,
-                            datetime.datetime.fromtimestamp(
-                                api_last_ts, tz=datetime.timezone.utc
-                            ).isoformat(),
-                        )
-                        last_usage_sum = real_usage_sum
-                        if real_cost_sum and real_cost_sum > 0:
-                            last_cost_sum = real_cost_sum
+                    anchor_cost = await get_instance(self.hass).async_add_executor_job(
+                        self._get_sum_at_timestamp,
+                        cost_statistic_id,
+                        first_api_ts,
+                    )
 
-                    # Use the API's last data timestamp as last_stats_time
-                    # so that data at or after this point gets reprocessed,
-                    # overwriting any stale estimated rows.
-                    _LOGGER.info(
-                        "Adjusting last_stats_time from %s to %s (API boundary)",
-                        datetime.datetime.fromtimestamp(
-                            last_stats_time, tz=datetime.timezone.utc
-                        ).isoformat(),
-                        datetime.datetime.fromtimestamp(
-                            api_last_ts, tz=datetime.timezone.utc
-                        ).isoformat(),
-                    )
-                    last_stats_time = api_last_ts
+                    if anchor_usage is not None:
+                        api_usage_sum = anchor_usage
+                        api_cost_sum = anchor_cost or 0.0
+                        for api_point in hourly_data:
+                            api_ts = api_point.time.replace(
+                                minute=0, second=0, microsecond=0
+                            ).timestamp()
+                            if api_ts <= first_api_ts:
+                                continue
+                            if isinstance(api_point.usage, (int, float)):
+                                api_usage_sum += api_point.usage
+                            if isinstance(api_point.cost, (int, float)):
+                                api_cost_sum += api_point.cost
+
+                        _LOGGER.info(
+                            "Seeded %s from API data: %.2f usage, %.2f cost",
+                            account.number,
+                            api_usage_sum,
+                            api_cost_sum,
+                        )
+                        last_usage_sum = api_usage_sum
+                        last_cost_sum = api_cost_sum
 
             _LOGGER.info(
                 "Incremental sort check: first=%s last=%s count=%d seed=%.2f last_ts=%s",
