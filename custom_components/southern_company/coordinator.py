@@ -299,8 +299,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     hourly_data[-1].time if hourly_data else None,
                     len(hourly_data),
                 )
-                _usage_sum = 0.0
-                _cost_sum = 0.0
+                _usage_sum = last_usage_sum = 0.0
+                _cost_sum = last_cost_sum = 0.0
                 last_stats_time = None
             else:
                 usage_rows = last_usage_stats.get(usage_statistic_id, [])
@@ -341,41 +341,44 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
                 # If the latest sum is far below the best seed, the
                 # data was re-seeded from 0 after a restart.
+                # Only warn when the DB itself looks corrupt; stale
+                # get_last_statistics cache returning 0 is expected
+                # during normal operation and doesn't warrant a warning.
                 usage_corrupt = (
-                    best_seed_usage > 0
+                    max_db_usage_sum > 0
+                    and best_seed_usage > 0
                     and last_usage_sum < best_seed_usage * 0.5
                 )
                 cost_corrupt = (
-                    best_seed_cost > 0
+                    max_db_cost_sum > 0
+                    and best_seed_cost > 0
                     and last_cost_sum < best_seed_cost * 0.5
                 )
                 if usage_corrupt:
                     _LOGGER.warning(
                         "DB usage sum looks corrupt for %s "
-                        "(latest=%.2f, best_seed=%.2f, "
-                        "stats_max=%.2f, db_max=%.2f, cache=%.2f); "
-                        "falling back to best_seed",
+                        "(latest=%.2f, db_max=%.2f) — "
+                        "falling back to best_seed=%.2f",
                         account.number,
                         last_usage_sum,
-                        best_seed_usage,
-                        stats_max_usage,
                         max_db_usage_sum,
-                        cached_usage_sum or 0.0,
+                        best_seed_usage,
                     )
+                    last_usage_sum = best_seed_usage
+                elif max_db_usage_sum > 0 and last_usage_sum < max_db_usage_sum * 0.5:
                     last_usage_sum = best_seed_usage
                 if cost_corrupt:
                     _LOGGER.warning(
                         "DB cost sum looks corrupt for %s "
-                        "(latest=%.2f, best_seed=%.2f, "
-                        "stats_max=%.2f, db_max=%.2f, cache=%.2f); "
-                        "falling back to best_seed",
+                        "(latest=%.2f, db_max=%.2f) — "
+                        "falling back to best_seed=%.2f",
                         account.number,
                         last_cost_sum,
-                        best_seed_cost,
-                        stats_max_cost,
                         max_db_cost_sum,
-                        cached_cost_sum or 0.0,
+                        best_seed_cost,
                     )
+                    last_cost_sum = best_seed_cost
+                elif max_db_cost_sum > 0 and last_cost_sum < max_db_cost_sum * 0.5:
                     last_cost_sum = best_seed_cost
 
                 # Find the last row with actual (non-zero) data rather than
@@ -442,59 +445,6 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             )
             hourly_data = [d for d in hourly_data if d.time is not None]
             hourly_data.sort(key=lambda d: d.time)
-
-            # Re-seed cumulative sums from real API data to avoid the
-            # feedback loop where estimated rows inflate the seed, leading
-            # to exponentially growing sums on each coordinator run.
-            #
-            # Strategy: find the first API data point (earliest in the
-            # 31-day window) and query the DB for its cumulative sum,
-            # which is guaranteed to be from real data.  Then add all
-            # API usage/cost values to get the correct cumulative sum
-            # at the last API data timestamp.
-            if hourly_data and last_stats_time is not None:
-                first_api_ts = None
-                for api_point in hourly_data:
-                    if isinstance(api_point.usage, (int, float)):
-                        first_api_ts = api_point.time.replace(
-                            minute=0, second=0, microsecond=0
-                        ).timestamp()
-                        break
-
-                if first_api_ts is not None:
-                    anchor_usage = await get_instance(self.hass).async_add_executor_job(
-                        self._get_sum_at_timestamp,
-                        usage_statistic_id,
-                        first_api_ts,
-                    )
-                    anchor_cost = await get_instance(self.hass).async_add_executor_job(
-                        self._get_sum_at_timestamp,
-                        cost_statistic_id,
-                        first_api_ts,
-                    )
-
-                    if anchor_usage is not None:
-                        api_usage_sum = anchor_usage
-                        api_cost_sum = anchor_cost or 0.0
-                        for api_point in hourly_data:
-                            api_ts = api_point.time.replace(
-                                minute=0, second=0, microsecond=0
-                            ).timestamp()
-                            if api_ts <= first_api_ts:
-                                continue
-                            if isinstance(api_point.usage, (int, float)):
-                                api_usage_sum += api_point.usage
-                            if isinstance(api_point.cost, (int, float)):
-                                api_cost_sum += api_point.cost
-
-                        _LOGGER.info(
-                            "Seeded %s from API data: %.2f usage, %.2f cost",
-                            account.number,
-                            api_usage_sum,
-                            api_cost_sum,
-                        )
-                        last_usage_sum = api_usage_sum
-                        last_cost_sum = api_cost_sum
 
             _LOGGER.info(
                 "Incremental sort check: first=%s last=%s count=%d seed=%.2f last_ts=%s",
@@ -649,37 +599,16 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     stats,
                 )
 
-            # Extrapolate estimated stats for the lag gap (typically ~48h).
+            # Extrapolation disabled to prevent feedback loop where estimated
+            # rows get re-used as seed for the next run, causing exponential
+            # sum inflation.  Gaps in the ~48h API lag window are preferred
+            # over corrupt cumulative totals.
             monthly = monthly_by_account.get(account.number)
             if monthly is not None:
-                # Determine the timestamp of the last actual data point.
-                # Use the newly inserted statistics if available, otherwise
-                # fall back to the DB's last real-data row.
-                if usage_statistics:
-                    last_entry = usage_statistics[-1]
-                    last_actual = (
-                        last_entry["start"]
-                        if isinstance(last_entry, dict)
-                        else last_entry.start
-                    )
-                elif last_stats_time is not None:
-                    last_actual = datetime.datetime.fromtimestamp(
-                        last_stats_time, tz=datetime.timezone.utc
-                    )
-                else:
-                    last_actual = None
-
-                if last_actual is not None:
-                    await self._extrapolate_gap(
-                        account,
-                        monthly,
-                        _usage_sum,
-                        _cost_sum,
-                        usage_statistic_id,
-                        cost_statistic_id,
-                        last_actual,
-                        hourly_data,
-                    )
+                _LOGGER.debug(
+                    "Skipping extrapolation for %s (disabled to prevent feedback loop)",
+                    account.number,
+                )
 
             # Commit the account's cumulative sums only after a successful loop.
             self._cost_sum_by_account[account.number] = _cost_sum
