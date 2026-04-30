@@ -83,9 +83,6 @@ async def _is_holiday(
     return result
 
 
-_LOGGER = logging.getLogger(__name__)
-
-
 @dataclasses.dataclass
 class AccountData:
     """Per-account data surfaced to sensors."""
@@ -268,9 +265,6 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 last_usage_stats
                 and usage_statistic_id in last_usage_stats
                 and len(last_usage_stats[usage_statistic_id]) > 0
-                and last_cost_stats
-                and cost_statistic_id in last_cost_stats
-                and len(last_cost_stats[cost_statistic_id]) > 0
             )
             cached = self._sum_cache.get(account.number, {})
             cached_usage_sum = cached.get("usage")
@@ -309,8 +303,10 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 _cost_sum = 0.0
                 last_stats_time = None
             else:
-                usage_last = last_usage_stats[usage_statistic_id][0]
-                cost_last = last_cost_stats[cost_statistic_id][0]
+                usage_rows = last_usage_stats.get(usage_statistic_id, [])
+                cost_rows = last_cost_stats.get(cost_statistic_id, []) if last_cost_stats else []
+                usage_last = usage_rows[0] if usage_rows else {}
+                cost_last = cost_rows[0] if cost_rows else {}
                 last_usage_sum = usage_last.get("sum", 0.0) or 0.0
                 last_cost_sum = cost_last.get("sum", 0.0) or 0.0
 
@@ -345,9 +341,17 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
                 # If the latest sum is far below the best seed, the
                 # data was re-seeded from 0 after a restart.
-                if best_seed_usage > 0 and last_usage_sum < best_seed_usage * 0.5:
+                usage_corrupt = (
+                    best_seed_usage > 0
+                    and last_usage_sum < best_seed_usage * 0.5
+                )
+                cost_corrupt = (
+                    best_seed_cost > 0
+                    and last_cost_sum < best_seed_cost * 0.5
+                )
+                if usage_corrupt:
                     _LOGGER.warning(
-                        "DB sum looks corrupt for %s "
+                        "DB usage sum looks corrupt for %s "
                         "(latest=%.2f, best_seed=%.2f, "
                         "stats_max=%.2f, db_max=%.2f, cache=%.2f); "
                         "falling back to best_seed",
@@ -359,12 +363,26 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                         cached_usage_sum or 0.0,
                     )
                     last_usage_sum = best_seed_usage
+                if cost_corrupt:
+                    _LOGGER.warning(
+                        "DB cost sum looks corrupt for %s "
+                        "(latest=%.2f, best_seed=%.2f, "
+                        "stats_max=%.2f, db_max=%.2f, cache=%.2f); "
+                        "falling back to best_seed",
+                        account.number,
+                        last_cost_sum,
+                        best_seed_cost,
+                        stats_max_cost,
+                        max_db_cost_sum,
+                        cached_cost_sum or 0.0,
+                    )
                     last_cost_sum = best_seed_cost
 
                 # Find the last row with actual (non-zero) data rather than
                 # using the absolute latest row, which may be an extrapolation
-                # placeholder set to a future time.  Using the placeholder's
-                # timestamp would cause all real data to be filtered out.
+                # placeholder or estimated row with state=0.  get_last_statistics
+                # returns rows in descending timestamp order, so the first
+                # match with state > 0 is the newest real data point.
                 all_usage_rows_for_time = last_usage_stats.get(usage_statistic_id, [])
                 last_real_row = None
                 for row in all_usage_rows_for_time:
@@ -373,6 +391,7 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                         raw_start = row.get("start")
                         if raw_start:
                             last_real_row = row
+                            break
                 if last_real_row is not None:
                     raw_start = last_real_row.get("start")
                     last_stats_time = (
@@ -713,26 +732,25 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         max_usage = 0.0
         max_cost = 0.0
         try:
-            conn = sqlite3.connect(db_path)
-            c = conn.cursor()
-            for stat_id, label in [
-                (usage_statistic_id, "usage"),
-                (cost_statistic_id, "cost"),
-            ]:
-                c.execute(
-                    "SELECT s.sum FROM statistics s "
-                    "JOIN statistics_meta m ON s.metadata_id = m.id "
-                    "WHERE m.statistic_id = ? AND s.sum IS NOT NULL "
-                    "ORDER BY s.sum DESC LIMIT 1",
-                    (stat_id,),
-                )
-                row = c.fetchone()
-                val = row[0] if row else 0.0
-                if label == "usage":
-                    max_usage = max(0.0, val)
-                else:
-                    max_cost = max(0.0, val)
-            conn.close()
+            with sqlite3.connect(db_path) as conn:
+                c = conn.cursor()
+                for stat_id, label in [
+                    (usage_statistic_id, "usage"),
+                    (cost_statistic_id, "cost"),
+                ]:
+                    c.execute(
+                        "SELECT s.sum FROM statistics s "
+                        "JOIN statistics_meta m ON s.metadata_id = m.id "
+                        "WHERE m.statistic_id = ? AND s.sum IS NOT NULL "
+                        "ORDER BY s.sum DESC LIMIT 1",
+                        (stat_id,),
+                    )
+                    row = c.fetchone()
+                    val = row[0] if row else 0.0
+                    if label == "usage":
+                        max_usage = max(0.0, val)
+                    else:
+                        max_cost = max(0.0, val)
         except Exception:
             pass
         return max_usage, max_cost
@@ -756,44 +774,46 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
         db_path = self.hass.config.path("home-assistant_v2.db")
         try:
-            conn = sqlite3.connect(db_path)
-            c = conn.cursor()
-            c.execute(
-                "SELECT s.start_ts, s.state, s.sum FROM statistics s "
-                "JOIN statistics_meta m ON s.metadata_id = m.id "
-                "WHERE m.statistic_id = ? AND s.state > 0 "
-                "ORDER BY s.start_ts DESC LIMIT 1",
-                (usage_statistic_id,),
-            )
-            row = c.fetchone()
-            conn.close()
-            if row:
-                return float(row[0]), float(row[1]), float(row[2])
-            return None
+            with sqlite3.connect(db_path) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT s.start_ts, s.state, s.sum FROM statistics s "
+                    "JOIN statistics_meta m ON s.metadata_id = m.id "
+                    "WHERE m.statistic_id = ? AND s.state > 0 "
+                    "ORDER BY s.start_ts DESC LIMIT 1",
+                    (usage_statistic_id,),
+                )
+                row = c.fetchone()
+                if row:
+                    return float(row[0]), float(row[1]), float(row[2])
+                return None
         except Exception:
             return None
 
     def _get_sum_at_timestamp(
         self, statistic_id: str, timestamp: float
     ) -> float | None:
-        """Query the DB for the cumulative sum at or before a timestamp."""
+        """Query the DB for the cumulative sum at or before a timestamp.
+
+        Only returns sums from rows with real data (state > 0) to avoid
+        re-seeding from stale estimated rows.
+        """
         import sqlite3
 
         db_path = self.hass.config.path("home-assistant_v2.db")
         try:
-            conn = sqlite3.connect(db_path)
-            c = conn.cursor()
-            c.execute(
-                "SELECT s.sum FROM statistics s "
-                "JOIN statistics_meta m ON s.metadata_id = m.id "
-                "WHERE m.statistic_id = ? AND s.start_ts <= ? "
-                "AND s.sum IS NOT NULL "
-                "ORDER BY s.start_ts DESC LIMIT 1",
-                (statistic_id, timestamp),
-            )
-            row = c.fetchone()
-            conn.close()
-            return float(row[0]) if row else None
+            with sqlite3.connect(db_path) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT s.sum FROM statistics s "
+                    "JOIN statistics_meta m ON s.metadata_id = m.id "
+                    "WHERE m.statistic_id = ? AND s.start_ts <= ? "
+                    "AND s.state > 0 AND s.sum IS NOT NULL "
+                    "ORDER BY s.start_ts DESC LIMIT 1",
+                    (statistic_id, timestamp),
+                )
+                row = c.fetchone()
+                return float(row[0]) if row else None
         except Exception:
             return None
 
@@ -808,7 +828,6 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         cumulative counter was at the start of the month.
         """
         import sqlite3
-        import datetime
 
         now = datetime.datetime.now(datetime.timezone.utc)
         # Southern Company billing cycles vary, but we approximate with
@@ -820,25 +839,24 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         usage_sum = 0.0
         cost_sum = 0.0
         try:
-            conn = sqlite3.connect(db_path)
-            c = conn.cursor()
-            for stat_id, label in [
-                (usage_statistic_id, "usage"),
-                (cost_statistic_id, "cost"),
-            ]:
-                c.execute(
-                    "SELECT s.sum FROM statistics s "
-                    "JOIN statistics_meta m ON s.metadata_id = m.id "
-                    "WHERE m.statistic_id = ? AND s.start_ts >= ? "
-                    "ORDER BY s.start_ts ASC LIMIT 1",
-                    (stat_id, month_start_ts),
-                )
-                row = c.fetchone()
-                if label == "usage":
-                    usage_sum = row[0] if row else 0.0
-                else:
-                    cost_sum = row[0] if row else 0.0
-            conn.close()
+            with sqlite3.connect(db_path) as conn:
+                c = conn.cursor()
+                for stat_id, label in [
+                    (usage_statistic_id, "usage"),
+                    (cost_statistic_id, "cost"),
+                ]:
+                    c.execute(
+                        "SELECT s.sum FROM statistics s "
+                        "JOIN statistics_meta m ON s.metadata_id = m.id "
+                        "WHERE m.statistic_id = ? AND s.start_ts >= ? "
+                        "ORDER BY s.start_ts ASC LIMIT 1",
+                        (stat_id, month_start_ts),
+                    )
+                    row = c.fetchone()
+                    if label == "usage":
+                        usage_sum = row[0] if row else 0.0
+                    else:
+                        cost_sum = row[0] if row else 0.0
         except Exception:
             pass
         return usage_sum, cost_sum
@@ -958,8 +976,9 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         # If usage_gap is zero or near-zero (the monthly total has already
         # been recorded), estimate from the average of recent hours instead.
         if usage_gap < 0.1 and gap_hours > 0:
-            # Find the average usage per hour from recent real data.
-            # Use the last 24 hours of the hourly_data we just processed.
+            # Recent API hours within the lag window may have None values.
+            # Filter the full hourly_data for entries with real usage > 0,
+            # then use the last 48 positive-usage entries as the baseline.
             recent_data = [
                 d for d in hourly_data
                 if isinstance(d.usage, (int, float)) and d.usage > 0
@@ -988,8 +1007,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     gap_hours,
                 )
 
-        est_usage_per_hour = usage_gap / gap_hours if gap_hours else 0.0
-        est_cost_per_hour = cost_gap / gap_hours if gap_hours else 0.0
+        base_usage_per_hour = usage_gap / gap_hours if gap_hours else 0.0
+        base_cost_per_hour = cost_gap / gap_hours if gap_hours else 0.0
 
         est_usage_stats: list[StatisticData] = []
         est_cost_stats: list[StatisticData] = []
@@ -999,6 +1018,9 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
         for i in range(1, gap_hours + 1):
             ts = last_actual + timedelta(hours=i)
             ts = ts.replace(minute=0, second=0, microsecond=0)
+
+            est_usage_per_hour = base_usage_per_hour
+            est_cost_per_hour = base_cost_per_hour
 
             # Cap extrapolation to not exceed monthly total — but only
             # when the running this-month portion hasn't already exceeded
@@ -1011,11 +1033,6 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                         est_usage_per_hour,
                         monthly_usage - run_this_month_usage,
                     )
-                else:
-                    # Already past the monthly total; the API data is stale.
-                    # Let the estimate continue at the calculated rate.
-                    pass
-
                 if run_this_month_cost < monthly_cost:
                     est_cost_per_hour = min(
                         est_cost_per_hour,
@@ -1037,8 +1054,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 "(%.2f kWh/hr, $%.2f/hr, usage_gap=%.2f, cost_gap=%.2f)",
                 gap_hours,
                 account.number,
-                est_usage_per_hour,
-                est_cost_per_hour,
+                base_usage_per_hour,
+                base_cost_per_hour,
                 usage_gap,
                 cost_gap,
             )
