@@ -1,0 +1,8 @@
+reset_nicor_statistics:
+  name: Reset Nicor Gas Statistics
+  description: >
+    Clears the nicor_statistics_imported flag and immediately reimports all
+    available Nicor Gas historical statistics from the current coordinator data.
+    Use this to retrigger the import without removing and re-adding the
+    integration.
+  fields: {}
