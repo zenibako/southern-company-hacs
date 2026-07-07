@@ -15,18 +15,42 @@
 
 **This component will set up the following platforms.**
 
-| Platform        | Description                               |
-| --------------- | ----------------------------------------- |
-| `binary_sensor` | Show something `True` or `False`.         |
-| `sensor`        | Show info from Southern Company HACS API. |
-| `switch`        | Switch something `True` or `False`.       |
+| Platform | Description                               |
+| -------- | ----------------------------------------- |
+| `sensor` | Show info from Southern Company HACS API. |
+
+## Supported utilities
+
+### Southern Company (Alabama Power, Georgia Power, Mississippi Power)
+
+| Sensor                          | Description                                |
+| ------------------------------- | ------------------------------------------ |
+| Monthly cost                    | Dollars billed to date this billing period |
+| Monthly consumption             | kWh used this billing period               |
+| Average daily cost              | Average daily cost this billing period     |
+| Average daily usage             | Average daily kWh this billing period      |
+| Higher projected monthly usage  | Upper estimate of monthly kWh              |
+| Lower projected monthly usage   | Lower estimate of monthly kWh              |
+| Higher projected monthly cost   | Upper estimate of monthly bill             |
+| Lower projected monthly cost    | Lower estimate of monthly bill             |
+
+### Nicor Gas (LDC 7)
+
+| Sensor                   | Description                                   |
+| ------------------------ | --------------------------------------------- |
+| Billing period gas (CCF) | Gas used in the current billing period (CCF)  |
+| Billing period cost      | Cost accrued in the current billing period    |
+| Projected bill           | Upper estimate of the current month's bill    |
+| Daily gas (CCF)          | Gas used on the most recent day (CCF)         |
+| Daily cost               | Cost for the most recent day                  |
+| Next meter read date     | Date of the next scheduled meter read         |
 
 ## Installation
 
 1. Using the tool of choice open the directory (folder) for your HA configuration (where you find `configuration.yaml`).
 2. If you do not have a `custom_components` directory (folder) there, you need to create it.
-3. In the `custom_components` directory (folder) create a new folder called `southern_company_hacs`.
-4. Download _all_ the files from the `custom_components/southern_company_hacs/` directory (folder) in this repository.
+3. In the `custom_components` directory (folder) create a new folder called `southern_company`.
+4. Download _all_ the files from the `custom_components/southern_company/` directory (folder) in this repository.
 5. Place the files you downloaded in the new directory (folder) you created.
 6. Restart Home Assistant
 7. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Southern Company HACS"

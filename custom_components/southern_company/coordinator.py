@@ -1,11 +1,18 @@
 """Coordinator to handle southern Company connections."""
 
+from __future__ import annotations
+
+import asyncio
 import datetime
 from datetime import timedelta
 import logging
+from typing import TYPE_CHECKING
 
 import southern_company_api
 from southern_company_api.exceptions import SouthernCompanyException
+
+if TYPE_CHECKING:
+    from southern_company_api.nicor_parser import NicorGasAPI
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
@@ -116,9 +123,6 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                     None,
                     {"sum"},
                 )
-                _LOGGER.warning(cost_stat)
-                _LOGGER.warning("HERE")
-                _LOGGER.info(cost_stat)
                 if cost_statistic_id not in cost_stat:
                     _LOGGER.warning(
                         "Something went wrong while getting the statistics. Manually reloading"
@@ -200,3 +204,38 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
 
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
             async_add_external_statistics(self.hass, usage_metadata, usage_statistics)
+
+
+class NicorGasCoordinator(DataUpdateCoordinator):
+    """Handle Nicor Gas data updates."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        nicor_gas_api: NicorGasAPI,
+    ) -> None:
+        """Initialize the data handler."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            name="Nicor Gas",
+            update_interval=timedelta(minutes=60),
+        )
+        self._api = nicor_gas_api
+
+    @property
+    def api(self) -> NicorGasAPI:
+        """Access the API."""
+        return self._api
+
+    async def _async_update_data(self) -> southern_company_api.NicorUsageHistory:
+        """Update data via API."""
+        try:
+            await self._api.connect()
+            await asyncio.sleep(10)
+            return await self._api.get_usage_history()
+        except Exception as ex:
+            _LOGGER.exception("Unexpected error fetching Nicor Gas usage history")
+            raise UpdateFailed(
+                f"Failed to get Nicor Gas usage history: {ex}"
+            ) from ex
