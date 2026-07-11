@@ -63,6 +63,11 @@ from southern_company_api.parser import SouthernCompanyAPI
 
 _LOGGER = logging.getLogger(__name__)
 
+
+class EmailValidationRequired(InvalidLogin):
+    """Raised when Southern Company requires email validation before login can complete."""
+
+
 _JWT_RE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 _SC_ATTR_RE = re.compile(
     r"""name\s*=\s*['"]ScWebToken['"][^>]*?value\s*=\s*['"]([^'"]+)['"]""",
@@ -333,8 +338,8 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
     # to /account/validateemail when email validation is required.
     redirect = (connection.get("data") or {}).get("redirect") or ""
     if redirect and "validateemail" in redirect.lower():
-        raise InvalidLogin(
-            "Email validation required. Log in at southernco.com, "
+        raise EmailValidationRequired(
+            "Email validation required. Visit https://webauth.southernco.com/account/login, "
             "validate your email address, then reconfigure this integration."
         )
 

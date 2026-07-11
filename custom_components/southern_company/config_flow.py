@@ -29,6 +29,7 @@ from .const import (
     CONF_ACCOUNT_TYPE,
     DOMAIN,
 )
+from .parser_patch import EmailValidationRequired
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if account_type == ACCOUNT_TYPE_NICOR_GAS:
             from southern_company_api.nicor_parser import NicorGasAPI  # noqa: PLC0415
+
             api = NicorGasAPI(
                 user_input[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
@@ -88,6 +90,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
             try:
                 await sca.authenticate()
+            except EmailValidationRequired:
+                errors["base"] = "email_validation_required"
             except CantReachSouthernCompany:
                 errors["base"] = "cannot_connect"
             except InvalidLogin:

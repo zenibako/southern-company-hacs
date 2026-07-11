@@ -60,6 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if account_type == ACCOUNT_TYPE_NICOR_GAS:
         from southern_company_api.nicor_parser import NicorGasAPI  # noqa: PLC0415
+
         api: NicorGasAPI = NicorGasAPI(
             entry.data[CONF_USERNAME],
             entry.data[CONF_PASSWORD],
@@ -97,7 +98,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "Token not found in southern company response. Please double check your credentials or open an issue"
             ) from err
         except InvalidLogin as err:
-            raise ConfigEntryAuthFailed("Login incorrect") from err
+            raise ConfigEntryAuthFailed(
+                "Login failed. If you have not validated your email with Southern Company, "
+                "visit https://webauth.southernco.com/account/login to do so."
+            ) from err
         coordinator = SouthernCompanyCoordinator(hass, sca)
 
     if entry.entry_id in failures:
@@ -124,6 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if account_type == ACCOUNT_TYPE_NICOR_GAS and not hass.services.has_service(
         DOMAIN, "reset_nicor_statistics"
     ):
+
         async def _handle_reset_nicor_statistics(call: ServiceCall) -> None:
             for entry_id, coord in hass.data.get(DOMAIN, {}).items():
                 if not isinstance(coord, NicorGasCoordinator):
@@ -138,7 +143,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await _async_import_nicor_statistics_safe(hass, coord.data)
                 _LOGGER.info("Nicor Gas statistics reimported for entry %s", entry_id)
 
-        hass.services.async_register(DOMAIN, "reset_nicor_statistics", _handle_reset_nicor_statistics)
+        hass.services.async_register(
+            DOMAIN, "reset_nicor_statistics", _handle_reset_nicor_statistics
+        )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -151,10 +158,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
 
     remaining_nicor = any(
-        isinstance(c, NicorGasCoordinator)
-        for c in hass.data.get(DOMAIN, {}).values()
+        isinstance(c, NicorGasCoordinator) for c in hass.data.get(DOMAIN, {}).values()
     )
-    if not remaining_nicor and hass.services.has_service(DOMAIN, "reset_nicor_statistics"):
+    if not remaining_nicor and hass.services.has_service(
+        DOMAIN, "reset_nicor_statistics"
+    ):
         hass.services.async_remove(DOMAIN, "reset_nicor_statistics")
 
     return unload_ok
