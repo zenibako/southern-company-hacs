@@ -60,10 +60,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_authenticate(
+    async def _try_authenticate(
         self, user_input: Mapping[str, Any], errors: dict[str, str]
-    ) -> ConfigFlowResult | None:
-        """Handle authentication for all flows. Returns entry on success, None on failure."""
+    ) -> None:
+        """Attempt authentication, populating errors dict on failure."""
         account_type = user_input.get(CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_SOUTHERN_COMPANY)
 
         if account_type == ACCOUNT_TYPE_NICOR_GAS:
@@ -83,7 +83,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception during Nicor Gas auth")
                 errors["base"] = "unknown"
-            title = "Nicor Gas"
         else:
             sca = SouthernCompanyAPI(
                 user_input[CONF_USERNAME],
@@ -101,11 +100,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception during Southern Company auth")
                 errors["base"] = "unknown"
-            title = "Southern Company Hacs"
 
+    async def async_authenticate(
+        self, user_input: Mapping[str, Any], errors: dict[str, str]
+    ) -> ConfigFlowResult | None:
+        """Handle authentication for the initial user flow. Returns entry on success, None on failure."""
+        await self._try_authenticate(user_input, errors)
         if errors:
             return None
-        return self.async_create_entry(title=title, data=user_input)
+        account_type = user_input.get(CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_SOUTHERN_COMPANY)
+        title = (
+            "Nicor Gas"
+            if account_type == ACCOUNT_TYPE_NICOR_GAS
+            else "Southern Company Hacs"
+        )
+        return self.async_create_entry(title=title, data=dict(user_input))
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -136,9 +145,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle a flow initiated by reauthentication."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            auth = await self.async_authenticate(user_input, errors)
-            if auth is not None:
-                return auth
+            await self._try_authenticate(user_input, errors)
+            if not errors:
+                # Update the existing entry instead of creating a new one
+                entry = self._get_reauth_entry()
+                self.hass.config_entries.async_update_entry(
+                    entry, data={**entry.data, **user_input}
+                )
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
         data_schema = vol.Schema(
             {
                 vol.Required(
