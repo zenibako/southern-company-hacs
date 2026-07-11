@@ -99,6 +99,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "Token not found in southern company response. Please double check your credentials or open an issue"
             ) from err
         except InvalidLogin as err:
+            _LOGGER.warning(
+                "Southern Company auth failed with InvalidLogin: %s. "
+                "This may be caused by bot detection (Imperva) on your "
+                "network. Try visiting southernco.com from a browser on "
+                "the same network as HA, then retry.",
+                err,
+            )
             raise ConfigEntryAuthFailed(
                 f"Login failed. If you have not validated your email with Southern Company, "
                 f"visit {EMAIL_VALIDATION_URL} to do so."

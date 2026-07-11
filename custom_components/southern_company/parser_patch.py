@@ -270,6 +270,14 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
         status_code = connection.get("statusCode")
         result = (connection.get("data") or {}).get("result")
         error_msg = (connection.get("data") or {}).get("errorMessage") or ""
+        _LOGGER.warning(
+            "Southern Company login failed: statusCode=%s result=%s "
+            "errorMessage=%s isSuccess=%s",
+            status_code,
+            result,
+            error_msg,
+            connection.get("isSuccess"),
+        )
 
         if status_code == 500 or result == 2:
             raise InvalidLogin(
