@@ -248,21 +248,22 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
         try:
             connection = await response.json()
         except (ContentTypeError, json.JSONDecodeError) as err:
-            # Imperva/Incapsula sometimes intercepts the POST and returns an
-            # HTML bot-detection page instead of JSON. This typically happens
-            # when the reese84 cookie (set by JavaScript) is missing.
+            # Non-JSON response means the request was intercepted (Imperva
+            # bot detection, WAF, or network proxy). This is never an auth
+            # failure — raise CantReachSouthernCompany so HA retries instead
+            # of prompting for reauth.
             try:
                 body = await response.text()
             except Exception:
                 body = ""
-            if "Incapsula" in body or "main-iframe" in body or "reese84" in body:
-                raise CantReachSouthernCompany(
-                    "Blocked by Southern Company bot detection (Imperva). "
-                    "This usually resolves after waiting. If it persists, "
-                    "try accessing southernco.com from a browser on the same "
-                    "network first."
-                ) from err
-            raise InvalidLogin from err
+            preview = body[:200] if body else "(empty)"
+            raise CantReachSouthernCompany(
+                f"Login API returned non-JSON response (Content-Type: "
+                f"{response.headers.get('Content-Type', 'unknown')}). "
+                f"Likely blocked by Southern Company bot detection (Imperva). "
+                f"Try accessing southernco.com from a browser on the same "
+                f"network. Response preview: {preview}"
+            ) from err
 
     # Check for explicit error states
     if not connection.get("isSuccess", False):

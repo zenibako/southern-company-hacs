@@ -6,11 +6,13 @@ from collections.abc import Mapping
 import logging
 from typing import Any
 
-from southern_company_api.parser import (
+from southern_company_api.exceptions import (
     CantReachSouthernCompany,
     InvalidLogin,
-    SouthernCompanyAPI,
+    NoRequestTokenFound,
+    NoScTokenFound,
 )
+from southern_company_api.parser import SouthernCompanyAPI
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -74,12 +76,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
             try:
                 await api.connect()
-            except CantReachSouthernCompany:
+            except (CantReachSouthernCompany, NoScTokenFound, NoRequestTokenFound):
                 errors["base"] = "cannot_connect"
             except InvalidLogin:
                 errors["base"] = "invalid_auth"
             except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+                _LOGGER.exception("Unexpected exception during Nicor Gas auth")
                 errors["base"] = "unknown"
             title = "Nicor Gas"
         else:
@@ -92,12 +94,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await sca.authenticate()
             except EmailValidationRequired:
                 errors["base"] = "email_validation_required"
-            except CantReachSouthernCompany:
+            except (CantReachSouthernCompany, NoScTokenFound, NoRequestTokenFound):
                 errors["base"] = "cannot_connect"
             except InvalidLogin:
                 errors["base"] = "invalid_auth"
             except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+                _LOGGER.exception("Unexpected exception during Southern Company auth")
                 errors["base"] = "unknown"
             title = "Southern Company Hacs"
 
