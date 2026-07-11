@@ -339,7 +339,8 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
     redirect = (connection.get("data") or {}).get("redirect") or ""
     if redirect and "validateemail" in redirect.lower():
         raise EmailValidationRequired(
-            "Email validation required. Visit https://webauth.southernco.com/account/login, "
+            "Email validation required. Visit "
+            "https://customerservice2.southerncompany.com/MyProfile/LoginInfo, "
             "validate your email address, then reconfigure this integration."
         )
 

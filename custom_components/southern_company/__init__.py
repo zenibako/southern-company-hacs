@@ -100,7 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except InvalidLogin as err:
             raise ConfigEntryAuthFailed(
                 "Login failed. If you have not validated your email with Southern Company, "
-                "visit https://webauth.southernco.com/account/login to do so."
+                "visit https://customerservice2.southerncompany.com/MyProfile/LoginInfo to do so."
             ) from err
         coordinator = SouthernCompanyCoordinator(hass, sca)
 
