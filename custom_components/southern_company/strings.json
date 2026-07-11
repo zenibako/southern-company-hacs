@@ -16,7 +16,8 @@
       "email_validation_required": "Email validation required. Visit https://customerservice2.southerncompany.com/MyProfile/LoginInfo to validate your email, then try again."
     },
     "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
+      "already_configured": "[%key:common::config_flow::abort::already_configured_service%]",
+      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
     }
   }
 }
