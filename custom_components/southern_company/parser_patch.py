@@ -440,16 +440,22 @@ async def _patched_get_accounts(self: SouthernCompanyAPI) -> list[Account]:
                 f"Incorrect mimetype while trying to get accounts. {error_text}"
             ) from err
         accounts = []
-        for account in account_json["Data"]:
-            accounts.append(
-                Account(
-                    name=account["Description"],
-                    primary=account["PrimaryAccount"] == "Y",
-                    number=account["AccountNumber"],
-                    company=COMPANY_MAP.get(account["Company"], Company.GPC),
-                    session=self.session,
+        try:
+            account_list = account_json["Data"]
+            for account in account_list:
+                accounts.append(
+                    Account(
+                        name=account["Description"],
+                        primary=account["PrimaryAccount"] == "Y",
+                        number=account["AccountNumber"],
+                        company=COMPANY_MAP.get(account["Company"], Company.GPC),
+                        session=self.session,
+                    )
                 )
-            )
+        except (KeyError, TypeError) as err:
+            raise CantReachSouthernCompany(
+                f"Unexpected account data format: {err}"
+            ) from err
     for account in accounts:
         await account.get_service_point_number(self._jwt)
     self._accounts = accounts

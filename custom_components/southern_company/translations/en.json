@@ -17,6 +17,13 @@
                     "username": "Username",
                     "account_type": "Account type"
                 }
+            },
+            "reauth_confirm": {
+                "data": {
+                    "password": "Password",
+                    "username": "Username",
+                    "account_type": "Account type"
+                }
             }
         }
     }

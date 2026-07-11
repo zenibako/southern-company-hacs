@@ -64,8 +64,8 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
                 for account in await self._southern_company_connection.accounts:
                     if not account.service_point_number:
                         _LOGGER.warning(
-                            "Skipping account %s: no service point number",
-                            account.number,
+                            "Skipping account ending in %s: no service point number",
+                            account.number[-4:] if account.number else "????",
                         )
                         continue
                     _LOGGER.debug("Updating sensor data for %s", account.number)
@@ -171,8 +171,11 @@ class SouthernCompanyCoordinator(DataUpdateCoordinator):
             usage_statistics = []
 
             for data in hourly_data:
-                if not isinstance(data.cost, (int, float)) or not isinstance(
-                    data.usage, (int, float)
+                if (
+                    isinstance(data.cost, bool)
+                    or isinstance(data.usage, bool)
+                    or not isinstance(data.cost, (int, float))
+                    or not isinstance(data.usage, (int, float))
                 ):
                     continue
                 from_time = data.time

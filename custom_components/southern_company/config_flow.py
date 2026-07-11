@@ -60,6 +60,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    _reauth_entry_data: Mapping[str, Any] = {}
+
     async def _try_authenticate(
         self, user_input: Mapping[str, Any], errors: dict[str, str]
     ) -> None:
@@ -137,7 +139,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle reauthentication."""
         _LOGGER.debug("Reauth?")
-        return await self.async_step_reauth_confirm(entry_data)
+        self._reauth_entry_data = entry_data
+        return await self.async_step_reauth_confirm(None)
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
@@ -147,23 +150,23 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             await self._try_authenticate(user_input, errors)
             if not errors:
-                # Update the existing entry instead of creating a new one
                 entry = self._get_reauth_entry()
                 self.hass.config_entries.async_update_entry(
                     entry, data={**entry.data, **user_input}
                 )
                 await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reauth_successful")
+        reauth_data = self._reauth_entry_data or {}
         data_schema = vol.Schema(
             {
                 vol.Required(
                     CONF_USERNAME,
-                    default=(user_input or {}).get(CONF_USERNAME, ""),
+                    default=reauth_data.get(CONF_USERNAME, ""),
                 ): str,
                 vol.Required(CONF_PASSWORD): str,
                 vol.Required(
                     CONF_ACCOUNT_TYPE,
-                    default=(user_input or {}).get(
+                    default=reauth_data.get(
                         CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_SOUTHERN_COMPANY
                     ),
                 ): SelectSelector(
