@@ -46,6 +46,7 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import unquote
 
 import aiohttp
 import jwt
@@ -164,21 +165,28 @@ _DEFAULT_PARAMS: dict[str, Any | None] = {
 
 
 def _extract_sc_token(connection: dict[str, Any]) -> str | None:
-    """Try every known location for the ScWebToken in the login response."""
+    """Try every known location for the ScWebToken in the login response.
+
+    The token may be URL-encoded (contains %2B, %2F, etc.) and is not
+    necessarily a JWT — the current API returns an opaque encrypted token.
+    """
     data = connection.get("data") or {}
 
-    # 1. Direct token field
+    # 1. Direct token field (may be URL-encoded)
     token = data.get("token")
-    if isinstance(token, str) and _JWT_RE.fullmatch(token):
-        return token
+    if isinstance(token, str) and token.strip():
+        decoded = unquote(token)
+        # Accept both JWT format and opaque tokens
+        if _JWT_RE.fullmatch(decoded) or len(decoded) > 100:
+            return decoded
 
     # 2. Token embedded in HTML
     html = data.get("html") or ""
     if isinstance(html, str) and html:
         attr_match = _SC_ATTR_RE.search(html)
         if attr_match:
-            candidate = attr_match.group(1)
-            if _JWT_RE.fullmatch(candidate):
+            candidate = unquote(attr_match.group(1))
+            if _JWT_RE.fullmatch(candidate) or len(candidate) > 100:
                 return candidate
         jwt_match = _JWT_RE.search(html)
         if jwt_match:
@@ -187,13 +195,11 @@ def _extract_sc_token(connection: dict[str, Any]) -> str | None:
     # 3. Token in returnUrlWithToken query parameter
     return_url = data.get("returnUrlWithToken")
     if isinstance(return_url, str) and return_url:
-        # Look for ScWebToken=... in the URL
         url_match = re.search(
             r"ScWebToken=([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)", return_url
         )
         if url_match:
             return url_match.group(1)
-        # Or a bare JWT in the URL
         jwt_match = _JWT_RE.search(return_url)
         if jwt_match:
             return jwt_match.group(0)
@@ -274,6 +280,20 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
         try:
             connection = await response.json()
         except (ContentTypeError, json.JSONDecodeError) as err:
+            # Imperva/Incapsula sometimes intercepts the POST and returns an
+            # HTML bot-detection page instead of JSON. This typically happens
+            # when the reese84 cookie (set by JavaScript) is missing.
+            try:
+                body = await response.text()
+            except Exception:
+                body = ""
+            if "Incapsula" in body or "main-iframe" in body or "reese84" in body:
+                raise CantReachSouthernCompany(
+                    "Blocked by Southern Company bot detection (Imperva). "
+                    "This usually resolves after waiting. If it persists, "
+                    "try accessing southernco.com from a browser on the same "
+                    "network first."
+                ) from err
             raise InvalidLogin from err
 
     # Check for explicit error states
@@ -307,8 +327,25 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
             f"Login request did not return a sc token (data keys: {keys})"
         )
     self._sc = token
-    sc_decoded = jwt.decode(self._sc, options={"verify_signature": False})
-    self._sc_expiry = datetime.datetime.fromtimestamp(sc_decoded["exp"])
+
+    # Check if the account needs email validation or other action before
+    # the ScWebToken can be exchanged for a JWT. The API returns a redirect
+    # to /account/validateemail when email validation is required.
+    redirect = (connection.get("data") or {}).get("redirect") or ""
+    if redirect and "validateemail" in redirect.lower():
+        raise InvalidLogin(
+            "Email validation required. Log in at southernco.com, "
+            "validate your email address, then reconfigure this integration."
+        )
+
+    # Try to decode as JWT for expiry; if it's not a JWT (opaque encrypted
+    # token), fall back to a reasonable default expiry.
+    try:
+        sc_decoded = jwt.decode(self._sc, options={"verify_signature": False})
+        self._sc_expiry = datetime.datetime.fromtimestamp(sc_decoded["exp"])
+    except (jwt.DecodeError, KeyError):
+        self._sc_expiry = datetime.datetime.now() + datetime.timedelta(hours=1)
+        _LOGGER.debug("ScWebToken is not a JWT; using 1-hour default expiry")
     return self._sc
 
 
