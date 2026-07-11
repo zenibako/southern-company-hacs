@@ -61,6 +61,8 @@ from southern_company_api.exceptions import (
 )
 from southern_company_api.parser import SouthernCompanyAPI
 
+from .const import EMAIL_VALIDATION_URL
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -339,8 +341,7 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
     redirect = (connection.get("data") or {}).get("redirect") or ""
     if redirect and "validateemail" in redirect.lower():
         raise EmailValidationRequired(
-            "Email validation required. Visit "
-            "https://customerservice2.southerncompany.com/MyProfile/LoginInfo, "
+            f"Email validation required. Visit {EMAIL_VALIDATION_URL}, "
             "validate your email address, then reconfigure this integration."
         )
 

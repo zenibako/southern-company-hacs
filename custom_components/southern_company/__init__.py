@@ -24,6 +24,7 @@ from .const import (
     ACCOUNT_TYPE_NICOR_GAS,
     CONF_ACCOUNT_TYPE,
     DOMAIN,
+    EMAIL_VALIDATION_URL,
 )
 from .coordinator import NicorGasCoordinator, SouthernCompanyCoordinator
 from .statistics import async_import_nicor_statistics
@@ -99,8 +100,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ) from err
         except InvalidLogin as err:
             raise ConfigEntryAuthFailed(
-                "Login failed. If you have not validated your email with Southern Company, "
-                "visit https://customerservice2.southerncompany.com/MyProfile/LoginInfo to do so."
+                f"Login failed. If you have not validated your email with Southern Company, "
+                f"visit {EMAIL_VALIDATION_URL} to do so."
             ) from err
         coordinator = SouthernCompanyCoordinator(hass, sca)
 
