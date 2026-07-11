@@ -121,50 +121,6 @@ _DOWNSTREAM_HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
-_DEFAULT_PARAMS: dict[str, Any | None] = {
-    "appBannerUrl": None,
-    "appTheme": None,
-    "appType": "E",
-    "appID": None,
-    "returnUrl": None,
-    "cancelUrl": None,
-    "logonID": None,
-    "loginUrl": None,
-    "originalReturnUrl": None,
-    "scWebToken": None,
-    "userID": None,
-    "addProfileLink": None,
-    "editProfileLink": None,
-    "forgotPasswordLink": None,
-    "forgotInfoLink": None,
-    "southerncoApplication": None,
-    "newUserHeaderText": None,
-    "newUserText": None,
-    "updateProfileText": None,
-    "forgotInfoText": None,
-    "emailValidationTicket": None,
-    "ticket": None,
-    "emailAddress": None,
-    "postTarget": None,
-    "compactDisplay": None,
-    "errorDisplayType": None,
-    "extendedIconVisible": None,
-    "extendedPopupEnabled": None,
-    "showLogin": None,
-    "noTokenReturnUrl": None,
-    "returnMethod": None,
-    "tokenEncoding": None,
-    "mfaConfigInternal": None,
-    "mfaConfigUnknown": None,
-    "mfaExcludeInternal": None,
-    "mfaExcludeUnknown": None,
-    "firstName": None,
-    "lastName": None,
-    "email": None,
-    "phoneNumber": None,
-    "oAuthLogoutId": None,
-}
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -174,32 +130,31 @@ _DEFAULT_PARAMS: dict[str, Any | None] = {
 def _extract_sc_token(connection: dict[str, Any]) -> str | None:
     """Try every known location for the ScWebToken in the login response.
 
-    The token may be URL-encoded (contains %2B, %2F, etc.) and is not
-    necessarily a JWT — the current API returns an opaque encrypted token.
+    The API can return the token in two forms:
+    - ``data.html``: an auto-submitting form with a JWT-format ScWebToken
+      (this is the one LoginComplete accepts).
+    - ``data.token``: an opaque encrypted token (LoginComplete rejects
+      this with 500).
+    - ``data.returnUrlWithToken``: a URL containing the token as a query
+      parameter.
+
+    Prefer the JWT from ``data.html`` first, then fall back to the others.
     """
     data = connection.get("data") or {}
 
-    # 1. Direct token field (may be URL-encoded)
-    token = data.get("token")
-    if isinstance(token, str) and token.strip():
-        decoded = unquote(token)
-        # Accept both JWT format and opaque tokens
-        if _JWT_RE.fullmatch(decoded) or len(decoded) > 100:
-            return decoded
-
-    # 2. Token embedded in HTML
+    # 1. JWT-format token embedded in HTML (preferred — LoginComplete accepts this)
     html = data.get("html") or ""
     if isinstance(html, str) and html:
         attr_match = _SC_ATTR_RE.search(html)
         if attr_match:
             candidate = unquote(attr_match.group(1))
-            if _JWT_RE.fullmatch(candidate) or len(candidate) > 100:
+            if _JWT_RE.fullmatch(candidate):
                 return candidate
         jwt_match = _JWT_RE.search(html)
         if jwt_match:
             return jwt_match.group(0)
 
-    # 3. Token in returnUrlWithToken query parameter
+    # 2. Token in returnUrlWithToken query parameter
     return_url = data.get("returnUrlWithToken")
     if isinstance(return_url, str) and return_url:
         url_match = re.search(
@@ -210,6 +165,13 @@ def _extract_sc_token(connection: dict[str, Any]) -> str | None:
         jwt_match = _JWT_RE.search(return_url)
         if jwt_match:
             return jwt_match.group(0)
+
+    # 3. Direct token field (opaque, may be URL-encoded) — last resort
+    token = data.get("token")
+    if isinstance(token, str) and token.strip():
+        decoded = unquote(token)
+        if _JWT_RE.fullmatch(decoded) or len(decoded) > 100:
+            return decoded
 
     return None
 
@@ -260,18 +222,17 @@ async def _patched_get_sc_web_token(self: SouthernCompanyAPI) -> str:
     headers = dict(_LOGIN_API_HEADERS)
     headers["RequestVerificationToken"] = self._request_token
 
-    # Build the payload to match what the frontend sends.
-    # The webAuthMVC.js _send() function merges the model with
-    # {params: webAuth.params, ScWebToken: token} and the login.js
-    # _login() function adds username, password, rememberUsername,
-    # staySignedIn, targetPage.
+    # Build the login payload. The API requires params.ReturnUrl to be
+    # the string "null" (not JSON null) to return the ScWebToken in
+    # data.html as an auto-submitting form. With JSON null, it returns
+    # an opaque token in data.token that LoginComplete rejects with 500.
     data = {
         "username": self.username,
         "password": self.password,
         "rememberUsername": False,
         "staySignedIn": False,
         "targetPage": 1,
-        "params": dict(_DEFAULT_PARAMS),
+        "params": {"ReturnUrl": "null"},
         "ScWebToken": "",
     }
 
